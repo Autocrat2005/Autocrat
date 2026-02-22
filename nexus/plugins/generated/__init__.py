@@ -1,0 +1,1 @@
+"""Auto-generated plugins directory."""

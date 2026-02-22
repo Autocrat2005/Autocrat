@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime databases
+*.db
+
+# Runtime logs
+logs/*.log
+
+# Screenshots (runtime captures)
+screenshots/*.png
+screenshots/*.jpg
+
+# Generated plugins (auto-created at runtime by core_builder)
+nexus/plugins/generated/gen_*.py
+!nexus/plugins/generated/__init__.py
+
+# Runtime artifacts
+*.txt
+!requirements.txt
+
+# Workflow outputs (user-generated at runtime)
+workflows/*.yaml

@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <meta name="theme-color" content="#0a0a0f">
+    <meta name="description" content="NEXUS OS — Advanced System Automation Control Panel">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>NEXUS OS — System Control</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <!-- ═══ Background Effects ═══ -->
+    <div class="bg-grid"></div>
+    <div class="bg-orb orb-1"></div>
+    <div class="bg-orb orb-2"></div>
+    <div class="bg-orb orb-3"></div>
+
+    <!-- ═══ Auth Modal ═══ -->
+    <div class="auth-overlay" id="auth-overlay">
+        <div class="auth-modal glass">
+            <div class="auth-icon">🔐</div>
+            <h2>NEXUS OS</h2>
+            <p class="auth-subtitle">Enter access token to execute commands</p>
+            <div class="auth-input-row">
+                <input type="password" id="auth-token" placeholder="Paste your token..." autocomplete="off"
+                    aria-label="Authentication token">
+                <button class="btn-auth" id="btn-auth" aria-label="Submit token">→</button>
+            </div>
+            <p class="auth-error" id="auth-error" role="alert"></p>
+            <p class="auth-hint">Dashboard & stats are visible without a token</p>
+        </div>
+    </div>
+
+    <!-- ═══ Header ═══ -->
+    <header class="top-bar" role="banner">
+        <div class="logo">
+            <span class="logo-icon" aria-hidden="true">⚡</span>
+            <span class="logo-text">NEXUS<span class="logo-os">OS</span></span>
+            <span class="version-badge">v2.0</span>
+        </div>
+        <div class="top-stats" role="status" aria-label="System statistics">
+            <div class="stat-pill" id="stat-cpu">
+                <span class="stat-icon" aria-hidden="true">🔥</span>
+                <span class="stat-label">CPU</span>
+                <span class="stat-value" id="cpu-val" aria-label="CPU usage">--</span>
+            </div>
+            <div class="stat-pill" id="stat-ram">
+                <span class="stat-icon" aria-hidden="true">💾</span>
+                <span class="stat-label">RAM</span>
+                <span class="stat-value" id="ram-val" aria-label="RAM usage">--</span>
+            </div>
+            <div class="stat-pill" id="stat-disk">
+                <span class="stat-icon" aria-hidden="true">💿</span>
+                <span class="stat-label">DISK</span>
+                <span class="stat-value" id="disk-val" aria-label="Disk usage">--</span>
+            </div>
+            <div class="stat-pill" id="stat-battery" style="display:none">
+                <span class="stat-icon" aria-hidden="true">🔋</span>
+                <span class="stat-label">BAT</span>
+                <span class="stat-value" id="bat-val" aria-label="Battery">--</span>
+            </div>
+            <div class="stat-pill status-connected" id="ws-status">
+                <span class="status-dot"></span>
+                <span>LIVE</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- ═══ Navigation Tabs ═══ -->
+    <nav class="tab-nav" role="tablist" aria-label="Main navigation">
+        <button class="tab active" data-tab="terminal" role="tab" aria-selected="true" aria-controls="tab-terminal">
+            <span class="tab-icon" aria-hidden="true">⌨️</span> <span class="tab-label">Terminal</span>
+        </button>
+        <button class="tab" data-tab="quick" role="tab" aria-selected="false" aria-controls="tab-quick">
+            <span class="tab-icon" aria-hidden="true">⚡</span> <span class="tab-label">Quick Actions</span>
+        </button>
+        <button class="tab" data-tab="dashboard" role="tab" aria-selected="false" aria-controls="tab-dashboard">
+            <span class="tab-icon" aria-hidden="true">📊</span> <span class="tab-label">Dashboard</span>
+        </button>
+        <button class="tab" data-tab="plugins" role="tab" aria-selected="false" aria-controls="tab-plugins">
+            <span class="tab-icon" aria-hidden="true">🧩</span> <span class="tab-label">Plugins</span>
+        </button>
+        <button class="tab" data-tab="history" role="tab" aria-selected="false" aria-controls="tab-history">
+            <span class="tab-icon" aria-hidden="true">📜</span> <span class="tab-label">History</span>
+        </button>
+        <button class="tab" data-tab="workflows" role="tab" aria-selected="false" aria-controls="tab-workflows">
+            <span class="tab-icon" aria-hidden="true">🔗</span> <span class="tab-label">Workflows</span>
+        </button>
+    </nav>
+
+    <!-- ═══ Tab Contents ═══ -->
+    <main class="content" role="main">
+
+        <!-- ──── TERMINAL ──── -->
+        <section class="tab-content active" id="tab-terminal" role="tabpanel" aria-labelledby="Terminal">
+            <div class="terminal-container">
+                <div class="terminal-header">
+                    <div class="terminal-dots" aria-hidden="true">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                    </div>
+                    <span class="terminal-title">nexus@system ~</span>
+                    <button class="btn-icon" id="clear-terminal" title="Clear terminal" aria-label="Clear terminal">🗑️</button>
+                </div>
+                <div class="terminal-output" id="terminal-output" role="log" aria-live="polite">
+                    <div class="output-line welcome">
+                        <pre>
+ ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗     ██████╗ ███████╗
+ ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝    ██╔═══██╗██╔════╝
+ ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗    ██║   ██║███████╗
+ ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║    ██║   ██║╚════██║
+ ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║    ╚██████╔╝███████║
+ ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝     ╚═════╝ ╚══════╝
+                                                            v2.0.0
+                        </pre>
+                        <p>Type <span class="cmd-hint" role="button" tabindex="0">help</span> for commands •
+                            <span class="cmd-hint" role="button" tabindex="0">plugins</span> to see modules •
+                            <span class="cmd-hint" role="button" tabindex="0">status</span> for AI brain stats •
+                            Powered by ML + Gemini LLM — try anything in natural language!</p>
+                    </div>
+                </div>
+                <!-- Autocomplete suggestions -->
+                <div class="autocomplete-dropdown" id="autocomplete-dropdown" hidden></div>
+                <div class="terminal-input-row">
+                    <span class="prompt" aria-hidden="true">❯</span>
+                    <input type="text" id="terminal-input" placeholder="Type a command or ask something..."
+                        autocomplete="off" autofocus aria-label="Command input"
+                        role="combobox" aria-autocomplete="list" aria-expanded="false">
+                    <button class="btn-send" id="btn-send" aria-label="Execute command">⚡</button>
+                </div>
+            </div>
+
+            <!-- Live Log Panel -->
+            <div class="log-panel">
+                <div class="log-header">
+                    <span>📡 Live Logs</span>
+                    <button class="btn-icon" id="clear-logs" title="Clear logs" aria-label="Clear logs">🗑️</button>
+                </div>
+                <div class="log-output" id="log-output" role="log" aria-live="off"></div>
+            </div>
+        </section>
+
+        <!-- ──── QUICK ACTIONS ──── -->
+        <section class="tab-content" id="tab-quick" role="tabpanel" aria-labelledby="Quick Actions">
+            <div class="quick-actions-container">
+                <h3 class="section-title">⚡ Quick Actions</h3>
+                <p class="section-subtitle">One-tap controls for common tasks</p>
+
+                <div class="quick-section">
+                    <h4 class="quick-section-title">🎵 Media</h4>
+                    <div class="quick-grid">
+                        <button class="quick-btn" data-cmd="previous song" aria-label="Previous track">⏮️<span>Prev</span></button>
+                        <button class="quick-btn quick-btn-lg" data-cmd="play pause" aria-label="Play/Pause">⏯️<span>Play/Pause</span></button>
+                        <button class="quick-btn" data-cmd="next song" aria-label="Next track">⏭️<span>Next</span></button>
+                    </div>
+                </div>
+
+                <div class="quick-section">
+                    <h4 class="quick-section-title">🔊 Volume & Brightness</h4>
+                    <div class="quick-grid">
+                        <button class="quick-btn" data-cmd="volume down" aria-label="Volume down">🔉<span>Vol -</span></button>
+                        <button class="quick-btn" data-cmd="mute" aria-label="Mute">🔇<span>Mute</span></button>
+                        <button class="quick-btn" data-cmd="volume up" aria-label="Volume up">🔊<span>Vol +</span></button>
+                        <button class="quick-btn" data-cmd="brightness down" aria-label="Brightness down">🔅<span>Dim</span></button>
+                        <button class="quick-btn" data-cmd="night light" aria-label="Night light">🌙<span>Night</span></button>
+                        <button class="quick-btn" data-cmd="brightness up" aria-label="Brightness up">☀️<span>Bright</span></button>
+                    </div>
+                </div>
+
+                <div class="quick-section">
+                    <h4 class="quick-section-title">🪟 Windows</h4>
+                    <div class="quick-grid">
+                        <button class="quick-btn" data-cmd="snap left" aria-label="Snap window left">⬅️<span>Snap L</span></button>
+                        <button class="quick-btn" data-cmd="minimize all" aria-label="Show desktop">🖥️<span>Desktop</span></button>
+                        <button class="quick-btn" data-cmd="snap right" aria-label="Snap window right">➡️<span>Snap R</span></button>
+                        <button class="quick-btn" data-cmd="alt tab" aria-label="Switch window">🔄<span>Alt-Tab</span></button>
+                        <button class="quick-btn" data-cmd="pin window" aria-label="Pin window on top">📌<span>Pin</span></button>
+                        <button class="quick-btn" data-cmd="task manager" aria-label="Task manager">📊<span>Tasks</span></button>
+                    </div>
+                </div>
+
+                <div class="quick-section">
+                    <h4 class="quick-section-title">🌐 Web & Apps</h4>
+                    <div class="quick-grid">
+                        <button class="quick-btn" data-cmd="open email" aria-label="Open Email">📧<span>Email</span></button>
+                        <button class="quick-btn" data-cmd="new tab" aria-label="New browser tab">📑<span>New Tab</span></button>
+                        <button class="quick-btn" data-cmd="close tab" aria-label="Close tab">❌<span>Close Tab</span></button>
+                        <button class="quick-btn" data-cmd="open youtube" aria-label="YouTube">📺<span>YouTube</span></button>
+                        <button class="quick-btn" data-cmd="open favorites" aria-label="Favorites">⭐<span>Favs</span></button>
+                        <button class="quick-btn" data-cmd="maps" aria-label="Maps">🗺️<span>Maps</span></button>
+                    </div>
+                </div>
+
+                <div class="quick-section">
+                    <h4 class="quick-section-title">🔧 System</h4>
+                    <div class="quick-grid">
+                        <button class="quick-btn" data-cmd="screenshot" aria-label="Screenshot">📸<span>Screenshot</span></button>
+                        <button class="quick-btn" data-cmd="clipboard" aria-label="Clipboard">📋<span>Clipboard</span></button>
+                        <button class="quick-btn" data-cmd="sysinfo" aria-label="System info">💻<span>Sys Info</span></button>
+                        <button class="quick-btn" data-cmd="wifi" aria-label="WiFi info">📡<span>WiFi</span></button>
+                        <button class="quick-btn" data-cmd="ip address" aria-label="IP address">🌐<span>IP</span></button>
+                        <button class="quick-btn" data-cmd="time" aria-label="Current time">🕐<span>Time</span></button>
+                    </div>
+                </div>
+
+                <div class="quick-section">
+                    <h4 class="quick-section-title">⚡ Power</h4>
+                    <div class="quick-grid">
+                        <button class="quick-btn" data-cmd="lock pc" aria-label="Lock PC">🔒<span>Lock</span></button>
+                        <button class="quick-btn" data-cmd="sleep" aria-label="Sleep">😴<span>Sleep</span></button>
+                        <button class="quick-btn" data-cmd="empty recycle bin" aria-label="Empty trash">🗑️<span>Recycle</span></button>
+                        <button class="quick-btn" data-cmd="organize downloads" aria-label="Organize downloads">📁<span>Organize DL</span></button>
+                        <button class="quick-btn" data-cmd="organize desktop" aria-label="Organize desktop">🧹<span>Clean Desk</span></button>
+                        <button class="quick-btn" data-cmd="note list" aria-label="Notes">📝<span>Notes</span></button>
+                    </div>
+                </div>
+
+                <div class="quick-section">
+                    <h4 class="quick-section-title">🧠 Intelligence</h4>
+                    <div class="quick-grid">
+                        <button class="quick-btn" data-cmd="gemini chats" aria-label="Open Gemini Chats">🤖<span>Gemini</span></button>
+                        <button class="quick-btn" data-cmd="last gemini chat" aria-label="Last Gemini Chat">💬<span>Last Chat</span></button>
+                        <button class="quick-btn" data-cmd="chatgpt" aria-label="Open ChatGPT">🧠<span>ChatGPT</span></button>
+                        <button class="quick-btn" data-cmd="browser history" aria-label="Browser History">🔍<span>History</span></button>
+                        <button class="quick-btn" data-cmd="recent tabs" aria-label="Recent Tabs">🌐<span>Recent</span></button>
+                        <button class="quick-btn" data-cmd="daily summary" aria-label="Daily Summary">📊<span>Summary</span></button>
+                    </div>
+                </div>
+
+                <div class="quick-section">
+                    <h4 class="quick-section-title">🩺 Diagnostics & Files</h4>
+                    <div class="quick-grid">
+                        <button class="quick-btn" data-cmd="why is my pc slow" aria-label="Diagnose Slow PC">🐢<span>Why Slow?</span></button>
+                        <button class="quick-btn" data-cmd="health check" aria-label="Health Check">🏥<span>Health</span></button>
+                        <button class="quick-btn" data-cmd="startup programs" aria-label="Startup Programs">🚀<span>Startup</span></button>
+                        <button class="quick-btn" data-cmd="recent files" aria-label="Recent Files">📂<span>Files</span></button>
+                        <button class="quick-btn" data-cmd="open last download" aria-label="Last Download">📥<span>Download</span></button>
+                        <button class="quick-btn" data-cmd="open last screenshot" aria-label="Last Screenshot">📸<span>Screenshot</span></button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ──── DASHBOARD ──── -->
+        <section class="tab-content" id="tab-dashboard" role="tabpanel" aria-labelledby="Dashboard">
+            <div class="dashboard-grid">
+                <div class="dash-card glass" id="card-cpu">
+                    <div class="card-header"><span class="card-icon" aria-hidden="true">🔥</span> CPU</div>
+                    <div class="gauge-container">
+                        <svg class="gauge" viewBox="0 0 120 120" aria-hidden="true">
+                            <circle class="gauge-bg" cx="60" cy="60" r="52" />
+                            <circle class="gauge-fill" id="gauge-cpu" cx="60" cy="60" r="52" />
+                        </svg>
+                        <div class="gauge-text" id="gauge-cpu-text" aria-label="CPU usage percent">--%</div>
+                    </div>
+                    <div class="card-details" id="cpu-details">Loading...</div>
+                </div>
+
+                <div class="dash-card glass" id="card-ram">
+                    <div class="card-header"><span class="card-icon" aria-hidden="true">💾</span> Memory</div>
+                    <div class="gauge-container">
+                        <svg class="gauge" viewBox="0 0 120 120" aria-hidden="true">
+                            <circle class="gauge-bg" cx="60" cy="60" r="52" />
+                            <circle class="gauge-fill" id="gauge-ram" cx="60" cy="60" r="52" />
+                        </svg>
+                        <div class="gauge-text" id="gauge-ram-text" aria-label="RAM usage percent">--%</div>
+                    </div>
+                    <div class="card-details" id="ram-details">Loading...</div>
+                </div>
+
+                <div class="dash-card glass" id="card-disk">
+                    <div class="card-header"><span class="card-icon" aria-hidden="true">💿</span> Disk</div>
+                    <div class="disk-bars" id="disk-bars">Loading...</div>
+                </div>
+
+                <div class="dash-card glass" id="card-network">
+                    <div class="card-header"><span class="card-icon" aria-hidden="true">🌐</span> Network</div>
+                    <div class="card-details" id="net-details">Loading...</div>
+                </div>
+
+                <div class="dash-card glass" id="card-battery">
+                    <div class="card-header"><span class="card-icon" aria-hidden="true">🔋</span> Battery</div>
+                    <div class="card-details" id="battery-details">Loading...</div>
+                </div>
+
+                <div class="dash-card glass" id="card-system">
+                    <div class="card-header"><span class="card-icon" aria-hidden="true">💻</span> System</div>
+                    <div class="card-details" id="system-details">Loading...</div>
+                </div>
+
+                <div class="dash-card glass" id="card-brain">
+                    <div class="card-header"><span class="card-icon" aria-hidden="true">🧠</span> AI Brain</div>
+                    <div class="card-details" id="brain-details">Loading...</div>
+                </div>
+
+                <div class="dash-card glass" id="card-ai-engine">
+                    <div class="card-header"><span class="card-icon" aria-hidden="true">🤖</span> Gemini LLM</div>
+                    <div class="card-details" id="ai-engine-details">Loading...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ──── PLUGINS ──── -->
+        <section class="tab-content" id="tab-plugins" role="tabpanel" aria-labelledby="Plugins">
+            <div class="plugins-grid" id="plugins-list">
+                <p class="loading">Loading plugins...</p>
+            </div>
+        </section>
+
+        <!-- ──── HISTORY ──── -->
+        <section class="tab-content" id="tab-history" role="tabpanel" aria-labelledby="History">
+            <div class="history-container">
+                <div class="history-header">
+                    <h3>Command History</h3>
+                    <button class="btn-small" id="refresh-history" aria-label="Refresh history">🔄 Refresh</button>
+                </div>
+                <div class="history-list" id="history-list">
+                    <p class="loading">Loading history...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- ──── WORKFLOWS ──── -->
+        <section class="tab-content" id="tab-workflows" role="tabpanel" aria-labelledby="Workflows">
+            <div class="workflows-container">
+                <div class="history-header">
+                    <h3>Workflows</h3>
+                    <button class="btn-small" id="refresh-workflows" aria-label="Refresh workflows">🔄 Refresh</button>
+                </div>
+                <div class="workflows-list" id="workflows-list">
+                    <p class="loading">Loading workflows...</p>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ═══ Keyboard Shortcut Overlay ═══ -->
+    <div class="shortcut-hint" id="shortcut-hint" hidden>
+        <span>Press <kbd>/</kbd> to focus terminal • <kbd>Ctrl+1-6</kbd> switch tabs • <kbd>Ctrl+L</kbd> clear • <kbd>Esc</kbd> close</span>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,2 @@
+# NEXUS OS — Integrations Package
+# External service integrations: Telegram, Discord, etc.

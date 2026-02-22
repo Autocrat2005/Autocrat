@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "autocrat-cli"
+version = "1.0.0"
+description = "AI-powered desktop automation OS — writes its own plugins, controls your PC from your phone, and asks permission before touching the internet."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Autocrat2005"}
+]
+keywords = ["automation", "ai", "desktop", "cli", "plugins", "llm", "ollama"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "pyautogui>=0.9.54",
+    "psutil>=5.9.0",
+    "pywin32>=306",
+    "Pillow>=10.0.0",
+    "pyperclip>=1.8.2",
+    "pycaw>=20230407",
+    "screen-brightness-control>=0.22.0",
+    "watchdog>=3.0.0",
+    "apscheduler>=3.10.0",
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+    "rich>=13.0.0",
+    "pytesseract>=0.3.10",
+    "comtypes>=1.2.0",
+    "httpx>=0.24.0",
+    "pyngrok>=7.0.0",
+    "sentence-transformers>=2.2.0",
+    "python-multipart>=0.0.9",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+telegram = ["python-telegram-bot>=21.0"]
+gemini = ["google-generativeai>=0.5.0"]
+browser = ["playwright>=1.54.0"]
+whisper = ["faster-whisper>=1.0.3"]
+all = [
+    "python-telegram-bot>=21.0",
+    "google-generativeai>=0.5.0",
+    "playwright>=1.54.0",
+    "faster-whisper>=1.0.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/Autocrat2005/Autocrat"
+Repository = "https://github.com/Autocrat2005/Autocrat"
+Issues = "https://github.com/Autocrat2005/Autocrat/issues"
+
+[project.scripts]
+autocrat = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["nexus*"]
