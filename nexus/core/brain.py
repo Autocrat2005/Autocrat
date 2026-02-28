@@ -1197,32 +1197,68 @@ class NexusBrain:
                         words.add(w)
             self._intent_keywords[intent_def["intent"]] = words
 
+    EMBEDDING_CACHE_PATH = "nexus_brain_embeddings.pt"
+
     def initialize(self):
-        """Load the sentence transformer model and pre-compute intent embeddings."""
+        """Load the sentence transformer model and intent embeddings.
+
+        Uses a disk cache for the pre-computed embeddings so subsequent
+        startups are near-instant (load from disk instead of re-encoding).
+        The cache is invalidated when the phrase list changes (hash check).
+        """
         if self._ready or self._loading:
             return
         self._loading = True
 
         try:
             from sentence_transformers import SentenceTransformer
+            import torch
+            import hashlib
+
             log.info("Loading AI brain model (all-MiniLM-L6-v2)...")
             start = time.time()
             self.model = SentenceTransformer("all-MiniLM-L6-v2")
 
-            # Pre-compute embeddings for all intent phrases
+            # Build phrase list + phrase→intent map
             all_phrases = []
             self._phrase_to_intent = {}
             for intent_def in self.catalog:
                 for phrase in intent_def["phrases"]:
                     all_phrases.append(phrase)
                     self._phrase_to_intent[phrase] = intent_def
-
-            self.intent_embeddings = self.model.encode(all_phrases, convert_to_tensor=True)
             self._all_phrases = all_phrases
+
+            # Compute a hash of all phrases to detect catalog changes
+            phrase_hash = hashlib.md5("|".join(all_phrases).encode()).hexdigest()
+
+            # Try loading cached embeddings from disk
+            loaded_from_cache = False
+            try:
+                import os
+                if os.path.exists(self.EMBEDDING_CACHE_PATH):
+                    cache = torch.load(self.EMBEDDING_CACHE_PATH, map_location="cpu", weights_only=True)
+                    if isinstance(cache, dict) and cache.get("hash") == phrase_hash:
+                        self.intent_embeddings = cache["embeddings"]
+                        loaded_from_cache = True
+                        log.info("⚡ Brain embeddings loaded from cache (instant)")
+            except Exception as cache_err:
+                log.debug(f"Cache load failed, will re-encode: {cache_err}")
+
+            if not loaded_from_cache:
+                # Encode all phrases (slow path — only on first run or after catalog changes)
+                self.intent_embeddings = self.model.encode(all_phrases, convert_to_tensor=True)
+                # Save to disk for next time
+                try:
+                    torch.save({"hash": phrase_hash, "embeddings": self.intent_embeddings.cpu()},
+                               self.EMBEDDING_CACHE_PATH)
+                    log.info("💾 Brain embeddings cached to disk for faster startup")
+                except Exception as save_err:
+                    log.debug(f"Failed to cache embeddings: {save_err}")
 
             elapsed = time.time() - start
             log.info(f"🧠 AI brain ready — {len(all_phrases)} training phrases, "
-                     f"{len(self.catalog)} intents in {elapsed:.1f}s")
+                     f"{len(self.catalog)} intents in {elapsed:.1f}s"
+                     f"{' (cached)' if loaded_from_cache else ''}")
             self._ready = True
         except ImportError:
             log.warning("sentence-transformers not installed — brain using fallback mode")
@@ -1233,12 +1269,18 @@ class NexusBrain:
         finally:
             self._loading = False
 
-    def classify(self, text: str, boost_map: Optional[Dict[str, float]] = None) -> Optional[Dict]:
+    def classify(self, text: str, boost_map: Optional[Dict[str, float]] = None,
+                 success_rates: Optional[Dict[str, float]] = None) -> Optional[Dict]:
         """
         Classify natural language text into an intent using ML embeddings.
         
         The model generalises — it understands phrasings NOT in the catalog
         because it matches semantic meaning, not just keywords.
+
+        Args:
+            boost_map: Frequency-based boost from learner (intent → 0-1 usage weight).
+            success_rates: Historical success rate per intent (intent → 0-1 ratio).
+                           Intents with low success get penalised; high success get boosted.
         """
         if not self._ready:
             return self._fallback_classify(text)
@@ -1260,6 +1302,17 @@ class NexusBrain:
                     intent_name = intent_def["intent"]
                     if intent_name in boost_map:
                         scores[i] = scores[i] + boost_map[intent_name] * 0.08
+
+            # Apply success-rate calibration (penalise historically failing intents)
+            if success_rates:
+                for i, phrase in enumerate(self._all_phrases):
+                    intent_def = self._phrase_to_intent[phrase]
+                    intent_name = intent_def["intent"]
+                    if intent_name in success_rates:
+                        rate = success_rates[intent_name]
+                        # Boost high-success intents, penalise low-success ones
+                        # rate=1.0 → +0.04, rate=0.5 → 0, rate=0 → -0.04
+                        scores[i] = scores[i] + (rate - 0.5) * 0.08
 
             # Get best match
             best_idx = torch.argmax(scores).item()

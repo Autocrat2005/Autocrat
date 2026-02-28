@@ -6,33 +6,33 @@ server:
   host: 127.0.0.1
   port: 9000
   cors_origins:
-    - "*"
+  - '*'
 plugins:
   enabled:
-    - window_manager
-    - process_controller
-    - file_ops
-    - keyboard_mouse
-    - screen_intel
-    - app_launcher
-    - clipboard
-    - system_info
-    - volume_display
-    - shell_executor
-    - task_scheduler
-    - workflow_engine
-    - smart_actions
-    - power_tools
-    - intelligence
-    - comet_web_agent
-    - core_builder
-settings: {}
+  - window_manager
+  - process_controller
+  - file_ops
+  - keyboard_mouse
+  - screen_intel
+  - app_launcher
+  - clipboard
+  - system_info
+  - volume_display
+  - shell_executor
+  - task_scheduler
+  - workflow_engine
+  - smart_actions
+  - power_tools
+  - intelligence
+  - comet_web_agent
+  - core_builder
+  settings: {}
 scheduler:
   jobs: []
 workflows:
   directory: workflows
 ai:
-  gemini_api_key: ""
+  gemini_api_key: ''
   gemini_enabled: false
   llm_backend: local_ollama
   local_model: qwen2.5-coder:3b
@@ -43,68 +43,69 @@ ai:
 system:
   safe_mode: false
   safe_mode_allow_actions:
-    - system_info.full
-    - system_info.cpu
-    - system_info.memory
-    - system_info.disk
-    - system_info.network
-    - system_info.battery
-    - system_info.uptime
-    - comet_web_agent.react_plan
+  - system_info.full
+  - system_info.cpu
+  - system_info.memory
+  - system_info.disk
+  - system_info.network
+  - system_info.battery
+  - system_info.uptime
+  - comet_web_agent.react_plan
 safety:
   confirm_destructive: true
   blocked_actions:
-    - power_tools.shutdown
-    - power_tools.restart
-    - power_tools.sleep
-    - power_tools.hibernate
-    - power_tools.logoff
+  - power_tools.shutdown
+  - power_tools.restart
+  - power_tools.sleep
+  - power_tools.hibernate
+  - power_tools.logoff
   web:
     allowlist_domains:
-      - codeforces.com
-      - github.com
-      - localhost
-      - api.openweathermap.org
-      - wttr.in
+    - codeforces.com
+    - github.com
+    - localhost
+    - api.openweathermap.org
+    - wttr.in
     blocked_selector_terms:
-      - delete
-      - remove
-      - drop
-      - erase
-      - destroy
-      - terminate
-      - submit
+    - delete
+    - remove
+    - drop
+    - erase
+    - destroy
+    - terminate
+    - submit
     react_mock_navigation_in_safe_mode: false
+settings: {}
 auth:
   token: 1MG04T@yash
 telegram:
-  bot_token: ""
+  bot_token: ''
   allowed_chat_ids: []
 heartbeat:
   enabled: true
   tasks:
-    - name: context_probe
-      command: context_probe
-      interval_minutes: 5
-      enabled: true
-      channels: []
-    - name: proactive_nudge
-      command: proactive_nudge
-      interval_minutes: 15
-      enabled: true
-      channels:
-        - telegram
-    - name: system_health_check
-      command: system_health
-      interval_minutes: 30
-      enabled: true
-      channels: []
-    - name: disk_space_alert
-      command: disk_alert
-      interval_minutes: 120
-      enabled: true
-      channels:
-        - telegram
+  - name: context_probe
+    command: context_probe
+    interval_minutes: 5
+    enabled: true
+    channels: []
+  - name: proactive_nudge
+    command: proactive_nudge
+    interval_minutes: 15
+    enabled: true
+    channels:
+    - telegram
+  - name: system_health_check
+    command: system_health
+    interval_minutes: 30
+    enabled: true
+    channels: []
+  - name: disk_space_alert
+    command: disk_alert
+    interval_minutes: 120
+    enabled: true
+    channels:
+    - telegram
 channels:
   broadcast_results: true
   vscode_enabled: true

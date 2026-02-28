@@ -40,6 +40,16 @@ class NexusEngine:
         self._last_result = None
         self._pending_confirmations: Dict[str, Dict[str, Any]] = {}
 
+        # Session context for pronoun resolution ("close it", "open that folder")
+        self._context: Dict[str, Optional[str]] = {
+            "app": None,       # last mentioned app/process
+            "file": None,      # last mentioned file/path
+            "folder": None,    # last mentioned folder
+            "url": None,       # last mentioned URL/website
+            "query": None,     # last search query
+            "window": None,    # last mentioned window title
+        }
+
         # JARVIS-style personality
         self.personality = Personality()
 
@@ -142,11 +152,12 @@ class NexusEngine:
 
     def execute(self, text: str) -> Dict[str, Any]:
         """
-        4-stage intelligent command pipeline:
-          1. Regex parser (fast, exact)
+        5-stage intelligent command pipeline:
+          0. Preprocessing — pronoun resolution, context injection
+          1. Regex parser (fast, exact) — with typo correction & abbreviations
           2. ML Brain — sentence-transformer embeddings
-          3. Gemini LLM — dynamic understanding
-          4. If LLM returns a conversational answer, show it directly
+          3. LLM — native tool calling / strict JSON
+          4. Conversational fallback
         """
         start = time.time()
         timestamp = datetime.now().isoformat()
@@ -168,6 +179,9 @@ class NexusEngine:
             else:
                 return {"success": True, "result": "No previous commands in this session.", "timestamp": timestamp, "duration_ms": 0}
 
+        # ── Stage 0: Pronoun / context resolution ──
+        text = self._resolve_context(text)
+
         # Handle approval / rejection commands
         approval_result = self._handle_confirmation_command(text, timestamp)
         if approval_result is not None:
@@ -180,7 +194,8 @@ class NexusEngine:
         intent_match = None
         if not parsed_commands:
             boost = self.learner.get_boost_map()
-            intent_match = self.brain.classify(text, boost_map=boost)
+            success_rates = self.learner.get_success_rates()
+            intent_match = self.brain.classify(text, boost_map=boost, success_rates=success_rates)
 
             if intent_match:
                 confidence = intent_match['confidence']
@@ -375,6 +390,9 @@ class NexusEngine:
         self._last_action = intent_match["action"] if intent_match else None
         self._last_result = final
 
+        # Update session context from this execution
+        self._update_context(text, parsed_commands, final)
+
         # Inject proactive suggestions for successful actions
         if final.get("success") and not final.get("suggestions"):
             chain_s = self.learner.get_chain_suggestions(text)
@@ -383,6 +401,109 @@ class NexusEngine:
 
         self.events.emit("command.executed", {"text": text, "result": final})
         return final
+
+    # ─── Pronoun / Context Resolution ─────────────────────────────────────────
+
+    _PRONOUNS = re.compile(
+        r"\b(it|that|this|those|them|"
+        r"that app|that file|that folder|that window|that site|"
+        r"the same one|the same app|the same file)\b",
+        re.IGNORECASE,
+    )
+
+    _ACTION_CONTEXT_MAP = {
+        # verb → which context slot to substitute
+        "close": "app", "kill": "app", "stop": "app", "quit": "app",
+        "open": "app", "launch": "app", "start": "app", "focus": "window",
+        "switch": "window", "minimize": "window", "maximize": "window",
+        "delete": "file", "remove": "file", "copy": "file", "move": "file",
+        "search": "query", "google": "query", "find": "query",
+    }
+
+    def _resolve_context(self, text: str) -> str:
+        """Replace pronouns (it, that, this) with actual context from the session.
+
+        Examples:
+          - After "open Chrome", "close it" → "close Chrome"
+          - After "search youtube for lofi", "search for that" → "search for lofi"
+          - After "find file report.pdf", "delete it" → "delete report.pdf"
+        """
+        if not self._PRONOUNS.search(text):
+            return text
+
+        text_lower = text.lower().strip()
+        words = text_lower.split()
+        if not words:
+            return text
+
+        # Determine which context slot to use based on the verb
+        verb = words[0]
+        slot = self._ACTION_CONTEXT_MAP.get(verb)
+
+        # If no specific mapping, try to guess from available context
+        if not slot:
+            # Check if any context is available at all
+            for candidate in ("app", "window", "file", "query", "url", "folder"):
+                if self._context.get(candidate):
+                    slot = candidate
+                    break
+
+        if not slot or not self._context.get(slot):
+            return text
+
+        replacement = self._context[slot]
+
+        # Replace the pronoun with the context value
+        resolved = self._PRONOUNS.sub(replacement, text, count=1)
+        if resolved != text:
+            log.info(f"🔗 Context resolved: '{text}' → '{resolved}'")
+        return resolved
+
+    def _update_context(self, text: str, parsed_commands: List[ParsedCommand], result: Dict):
+        """Extract entities from the executed command and update session context."""
+        if not parsed_commands or not result.get("success"):
+            return
+
+        for parsed in parsed_commands:
+            args = parsed.args or {}
+            plugin = parsed.plugin
+            action = parsed.action
+
+            # App context
+            if plugin in ("app_launcher", "process_controller"):
+                for key in ("app_name", "query", "target", "path"):
+                    if key in args and args[key]:
+                        self._context["app"] = str(args[key])
+                        break
+
+            # Window context
+            if plugin == "window_manager":
+                for key in ("title", "query", "target"):
+                    if key in args and args[key]:
+                        self._context["window"] = str(args[key])
+                        break
+
+            # File context
+            if plugin == "file_ops":
+                for key in ("path", "src", "pattern", "query"):
+                    if key in args and args[key]:
+                        self._context["file"] = str(args[key])
+                        break
+                if "directory" in args:
+                    self._context["folder"] = str(args["directory"])
+
+            # URL / website context
+            if plugin == "smart_actions" and action in ("open_website", "web_search_google", "web_search_youtube"):
+                if "query" in args:
+                    val = str(args["query"])
+                    if "." in val or "://" in val:
+                        self._context["url"] = val
+                    else:
+                        self._context["query"] = val
+
+            # Generic query context (search queries etc.)
+            if "query" in args and args["query"] and plugin not in ("_meta",):
+                self._context["query"] = str(args["query"])
 
     def _handle_confirmation_command(self, text: str, timestamp: str) -> Optional[Dict[str, Any]]:
         """Handle approve/reject commands for pending confirmations."""

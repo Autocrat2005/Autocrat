@@ -26,6 +26,9 @@ Thumbs.db
 # Runtime databases
 *.db
 
+# Brain embedding cache
+nexus_brain_embeddings.pt
+
 # Runtime logs
 logs/*.log
 

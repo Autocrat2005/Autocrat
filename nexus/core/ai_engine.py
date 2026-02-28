@@ -211,6 +211,10 @@ class GeminiEngine:
         self.local_retry_count = max(0, int(local_retry_count or 0))
         self.use_native_tools = bool(use_native_tools)
         self._supports_native_tools: Optional[bool] = None  # auto-detected
+
+        # Multi-turn conversation context (sliding window of last N turns)
+        self._conversation_history: List[Dict[str, str]] = []
+        self._max_conversation_turns = 6  # keep last 6 user/assistant pairs
         self._init_backend()
 
     def _init_backend(self):
@@ -267,6 +271,26 @@ class GeminiEngine:
                 return self.local_model in names
         except Exception:
             return False
+
+    # ──────────────────────────────────────────────────────────────────
+    # Multi-turn Conversation Memory
+    # ──────────────────────────────────────────────────────────────────
+
+    def _push_turn(self, role: str, content: str):
+        """Add a message to the sliding conversation window."""
+        self._conversation_history.append({"role": role, "content": content})
+        # Trim to max turns (each turn = user + assistant = 2 messages)
+        max_msgs = self._max_conversation_turns * 2
+        if len(self._conversation_history) > max_msgs:
+            self._conversation_history = self._conversation_history[-max_msgs:]
+
+    def _get_conversation_messages(self, system_content: str, user_text: str) -> List[Dict[str, str]]:
+        """Build message list with system prompt + conversation history + current user message."""
+        messages = [{"role": "system", "content": system_content}]
+        # Add recent conversation history for multi-turn context
+        messages.extend(self._conversation_history)
+        messages.append({"role": "user", "content": user_text})
+        return messages
 
     # ──────────────────────────────────────────────────────────────────
     # Smart Context Window — send only relevant commands to the LLM
@@ -425,22 +449,19 @@ class GeminiEngine:
         1. The model natively understands tool schemas (no prompt parsing needed)
         2. No JSON repair loop — the output is structured by the model itself
         3. Smaller prompt size (tool definitions are compact)
+        4. Multi-turn context included for follow-up understanding
         """
         tools = self._build_ollama_tools(commands)
+        system_msg = (
+            "You are the AI brain of Autocrat, a Windows PC automation system. "
+            "The user gives natural language commands. Use the provided tools to "
+            "perform actions. If no tool fits, respond conversationally. "
+            "For multi-step tasks, you may call multiple tools."
+        )
+        messages = self._get_conversation_messages(system_msg, user_text)
         payload = {
             "model": self.local_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are the AI brain of Autocrat, a Windows PC automation system. "
-                        "The user gives natural language commands. Use the provided tools to "
-                        "perform actions. If no tool fits, respond conversationally. "
-                        "For multi-step tasks, you may call multiple tools."
-                    ),
-                },
-                {"role": "user", "content": user_text},
-            ],
+            "messages": messages,
             "tools": tools,
             "stream": False,
             "options": {"temperature": 0.05, "num_predict": 500},
@@ -478,6 +499,9 @@ class GeminiEngine:
 
             if steps:
                 log.info(f"🔧 Native tool call: {[s['action'] for s in steps]}")
+                # Record turn for multi-turn context
+                self._push_turn("user", user_text)
+                self._push_turn("assistant", f"[tool_call: {steps[0]['action']}]")
                 result = {
                     "action": steps[0]["action"],
                     "params": steps[0]["params"],
@@ -491,6 +515,9 @@ class GeminiEngine:
         # No tool call — it's a conversational response
         content = message.get("content", "").strip()
         if content:
+            # Record turn for multi-turn context
+            self._push_turn("user", user_text)
+            self._push_turn("assistant", content[:500])
             return {
                 "action": "__conversation__",
                 "response": content,

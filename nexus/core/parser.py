@@ -1,7 +1,8 @@
 """
 Autocrat — Command Parser
 Parses natural text commands into (plugin, action, args) tuples.
-Supports direct commands, aliases, fuzzy matching, and chained commands.
+Supports direct commands, aliases, fuzzy matching, chained commands,
+typo autocorrection, and smart abbreviation expansion.
 """
 
 import re
@@ -20,6 +21,142 @@ class ParsedCommand:
     args: Dict[str, Any]
     raw: str = ""
     confidence: float = 1.0
+
+
+# ─── Smart Abbreviations & Aliases ────────────────────────────────────────────
+# Maps short forms to canonical forms BEFORE regex matching.
+ABBREVIATIONS = {
+    "ss": "screenshot",
+    "sc": "screenshot",
+    "vol": "volume",
+    "brt": "brightness",
+    "bri": "brightness",
+    "dl": "download",
+    "dls": "downloads",
+    "proc": "process",
+    "procs": "processes",
+    "sysinfo": "sysinfo",
+    "si": "sysinfo",
+    "ws": "windows",
+    "wm": "window",
+    "cb": "clipboard",
+    "clip": "clipboard",
+    "kb": "keyboard",
+    "tm": "task manager",
+    "ps": "powershell",
+    "ff": "find file",
+    "yt": "youtube",
+    "g": "google",
+    "wp": "wikipedia",
+    "gh": "github",
+    "so": "stackoverflow",
+    "np": "notepad",
+    "calc": "calculator",
+    "cmd": "shell",
+    "pp": "play pause",
+    "ns": "next song",
+    "nt": "next track",
+    "pt": "previous track",
+    "mute": "mute",
+    "unmute": "unmute",
+    "nlt": "night light",
+    "rc": "recycle",
+    "pw": "pin window",
+}
+
+# ─── Vocabulary for typo correction ───────────────────────────────────────────
+# Important keywords that appear in COMMAND_PATTERNS — we correct typos against these.
+VOCAB = {
+    "screenshot", "volume", "brightness", "mute", "unmute", "clipboard",
+    "process", "processes", "window", "windows", "minimize", "maximize",
+    "focus", "close", "kill", "open", "launch", "start", "find", "search",
+    "delete", "remove", "copy", "move", "organize", "schedule", "workflow",
+    "shutdown", "restart", "sleep", "hibernate", "logoff", "battery",
+    "network", "uptime", "memory", "disk", "powershell", "shell",
+    "hotkey", "press", "click", "scroll", "drag", "type", "snap",
+    "timer", "note", "notes", "wifi", "youtube", "google", "wikipedia",
+    "amazon", "github", "reddit", "refresh", "save", "undo", "redo",
+    "help", "plugins", "history", "status", "suggest", "suggestions",
+    "tab", "tabs", "desktop", "downloads", "recycle", "recent",
+    "duplicate", "large", "define", "translate", "convert", "calculate",
+    "diagnose", "health", "startup", "brightness", "night", "light",
+    "pin", "empty", "favorites", "gemini", "chatgpt",
+}
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """Levenshtein edit distance between two strings."""
+    if len(a) < len(b):
+        return _edit_distance(b, a)
+    if len(b) == 0:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            cost = 0 if ca == cb else 1
+            curr.append(min(curr[j] + 1, prev[j + 1] + 1, prev[j] + cost))
+        prev = curr
+    return prev[len(b)]
+
+
+def autocorrect_word(word: str, max_dist: int = 2) -> str:
+    """Correct a single word against VOCAB if edit distance is small enough.
+
+    Rules:
+    - Words <= 2 chars are never corrected (too ambiguous).
+    - Only correct if edit distance <= min(2, len(word)//3).
+    - Prefer exact prefix matches over edit distance matches.
+    """
+    if len(word) <= 2 or word in VOCAB:
+        return word
+
+    effective_max = min(max_dist, max(1, len(word) // 3))
+
+    # Prefix match first (e.g., "screensho" → "screenshot")
+    prefix_matches = [v for v in VOCAB if v.startswith(word) and len(v) - len(word) <= 3]
+    if len(prefix_matches) == 1:
+        log.debug(f"Autocorrect (prefix): '{word}' → '{prefix_matches[0]}'")
+        return prefix_matches[0]
+
+    best, best_dist = word, effective_max + 1
+    for v in VOCAB:
+        if abs(len(v) - len(word)) > effective_max:
+            continue
+        d = _edit_distance(word, v)
+        if d < best_dist:
+            best, best_dist = v, d
+
+    if best != word:
+        log.debug(f"Autocorrect: '{word}' → '{best}' (dist={best_dist})")
+    return best
+
+
+def preprocess_input(text: str) -> str:
+    """Expand abbreviations and auto-correct typos before regex matching.
+
+    Pipeline: abbreviation expansion → typo correction.
+    """
+    words = text.lower().split()
+    if not words:
+        return text
+
+    # Pass 1: Expand known abbreviations (exact match only)
+    expanded = []
+    for w in words:
+        if w in ABBREVIATIONS:
+            expanded.append(ABBREVIATIONS[w])
+            log.debug(f"Abbreviation: '{w}' → '{ABBREVIATIONS[w]}'")
+        else:
+            expanded.append(w)
+
+    # Pass 2: Autocorrect remaining words against vocabulary
+    corrected = [autocorrect_word(w) for w in expanded]
+
+    result = " ".join(corrected)
+    if result != text.lower():
+        log.info(f"✏️ Input preprocessed: '{text}' → '{result}'")
+    return result
 
 
 # ─── Command Patterns ────────────────────────────────────────────────────────
@@ -269,7 +406,12 @@ COMMAND_PATTERNS = [
 
 
 class CommandParser:
-    """Parses text commands into structured ParsedCommand objects."""
+    """Parses text commands into structured ParsedCommand objects.
+    
+    Preprocessing pipeline runs before regex matching:
+      1. Abbreviation expansion (ss → screenshot, vol → volume)
+      2. Typo autocorrection via edit distance against known vocabulary
+    """
 
     CHAIN_SEPARATORS = [" and then ", " && ", " then ", " >> "]
 
@@ -295,9 +437,26 @@ class CommandParser:
         return [parsed] if parsed else []
 
     def _parse_single(self, text: str) -> Optional[ParsedCommand]:
-        """Parse a single command text."""
-        text_lower = text.lower().strip()
+        """Parse a single command text with preprocessing."""
+        original = text
+        preprocessed = preprocess_input(text)
 
+        # Try preprocessed version first
+        result = self._match_patterns(preprocessed, original)
+        if result:
+            return result
+
+        # If preprocessing changed the input, also try original (case-insensitive)
+        if preprocessed != text.lower():
+            result = self._match_patterns(text.lower().strip(), original)
+            if result:
+                return result
+
+        # Fuzzy fallback
+        return self._fuzzy_match(preprocessed, original)
+
+    def _match_patterns(self, text_lower: str, original: str) -> Optional[ParsedCommand]:
+        """Match against COMMAND_PATTERNS."""
         for pattern, plugin, action, defaults in COMMAND_PATTERNS:
             match = re.match(pattern, text_lower, re.IGNORECASE)
             if match:
@@ -312,17 +471,15 @@ class CommandParser:
                         except ValueError:
                             pass
 
-                log.debug(f"Parsed: '{text}' → {plugin}.{action}({args})")
+                log.debug(f"Parsed: '{original}' → {plugin}.{action}({args})")
                 return ParsedCommand(
                     plugin=plugin,
                     action=action,
                     args=args,
-                    raw=text,
+                    raw=original,
                     confidence=1.0,
                 )
-
-        # Fuzzy fallback — try keyword matching
-        return self._fuzzy_match(text_lower, text)
+        return None
 
     def _fuzzy_match(self, text_lower: str, original: str) -> Optional[ParsedCommand]:
         """Attempt fuzzy matching for unrecognized commands."""

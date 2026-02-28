@@ -160,6 +160,29 @@ class BehaviorLearner:
 
         return boost
 
+    def get_success_rates(self) -> Dict[str, float]:
+        """Get per-intent success rates for confidence calibration.
+
+        Returns a dict of intent → success_ratio (0.0 to 1.0).
+        Only includes intents with >= 3 data points for statistical significance.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT intent,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes
+            FROM command_log
+            WHERE intent IS NOT NULL
+            GROUP BY intent
+            HAVING total >= 3
+        """)
+        rates = {}
+        for row in cursor.fetchall():
+            total = row["total"]
+            successes = row["successes"]
+            rates[row["intent"]] = successes / total if total > 0 else 0.5
+        return rates
+
     def get_time_suggestions(self, top_k: int = 3) -> List[Dict]:
         """
         Get suggestions based on current time patterns.
