@@ -1,5 +1,5 @@
 """
-NEXUS OS — Smart Actions Plugin
+Autocrat — Smart Actions Plugin
 High-level actions using keyboard shortcuts instead of coordinates.
 No pixel positions needed — uses OS shortcuts and app hotkeys.
 """
@@ -617,7 +617,7 @@ class SmartActionsPlugin(NexusPlugin):
             greeting = "Good evening"
         return {
             "success": True,
-            "result": f"👋 {greeting}! I'm NEXUS OS, your system automation assistant.\n"
+            "result": f"👋 {greeting}! I'm Autocrat, your system automation assistant.\n"
                       f"   Type 'help' to see what I can do, or just tell me what you need!",
         }
 

@@ -1,5 +1,5 @@
 """
-NEXUS OS — Plugin Base Class
+Autocrat — Plugin Base Class
 All automation modules extend this class.
 """
 
@@ -22,7 +22,7 @@ class CommandDef:
 
 
 class NexusPlugin(ABC):
-    """Base class for all NEXUS OS plugins."""
+    """Base class for all Autocrat plugins."""
 
     name: str = "unnamed"
     description: str = "No description"

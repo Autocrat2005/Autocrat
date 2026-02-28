@@ -1,5 +1,5 @@
 """
-NEXUS OS — File Operations Plugin
+Autocrat — File Operations Plugin
 Search, move, copy, delete, organize, watch, and analyze files.
 """
 

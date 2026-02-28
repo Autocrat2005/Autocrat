@@ -1,5 +1,5 @@
 """
-NEXUS OS — AI Brain (ML-Powered)
+Autocrat — AI Brain (ML-Powered)
 Intent classification using sentence embeddings + cosine similarity.
 Maps natural language → structured intent → plugin action.
 

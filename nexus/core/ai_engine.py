@@ -1,5 +1,5 @@
 """
-NEXUS OS — AI Engine (LLM Integration)
+Autocrat — AI Engine (LLM Integration)
 Uses a configurable LLM backend for fallback understanding:
     - local_ollama (default, on-device)
     - gemini (optional cloud backend)
@@ -618,7 +618,7 @@ class GeminiEngine:
 
     def _make_system_prompt(self) -> str:
         """Build the system prompt for Gemini with all available commands."""
-        return f"""You are the AI brain of "NEXUS OS", a Windows PC automation system.
+        return f"""You are the AI brain of "Autocrat", a Windows PC automation system.
 The user gives natural language commands. Your job is to decide what action to take.
 
 ## Available Actions
@@ -655,7 +655,7 @@ Respond ONLY with the JSON or plain text answer — nothing else."""
         else:
             summary = self._command_summary
 
-        return f"""You are NEXUS OS tool router.
+        return f"""You are Autocrat tool router.
 
 AVAILABLE ACTIONS:
 {summary}

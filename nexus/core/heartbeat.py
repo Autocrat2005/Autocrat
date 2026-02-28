@@ -1,5 +1,5 @@
 """
-NEXUS OS — Heartbeat / Proactive Task System
+Autocrat — Heartbeat / Proactive Task System
 Runs background tasks at configured intervals and pushes results to all channels.
 
 Supports:

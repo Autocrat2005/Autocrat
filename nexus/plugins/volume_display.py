@@ -1,5 +1,5 @@
 """
-NEXUS OS — Volume & Display Plugin
+Autocrat — Volume & Display Plugin
 Control system volume and screen brightness.
 """
 

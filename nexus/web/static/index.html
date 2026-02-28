@@ -5,10 +5,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <meta name="theme-color" content="#0a0a0f">
-    <meta name="description" content="NEXUS OS — Advanced System Automation Control Panel">
+    <meta name="description" content="Autocrat — AI-Powered Desktop Automation Control Panel">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>NEXUS OS — System Control</title>
+    <title>Autocrat — Control Panel</title>
     <link rel="stylesheet" href="/static/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link
@@ -27,7 +27,7 @@
     <div class="auth-overlay" id="auth-overlay">
         <div class="auth-modal glass">
             <div class="auth-icon">🔐</div>
-            <h2>NEXUS OS</h2>
+            <h2>Autocrat</h2>
             <p class="auth-subtitle">Enter access token to execute commands</p>
             <div class="auth-input-row">
                 <input type="password" id="auth-token" placeholder="Paste your token..." autocomplete="off"
@@ -43,7 +43,7 @@
     <header class="top-bar" role="banner">
         <div class="logo">
             <span class="logo-icon" aria-hidden="true">⚡</span>
-            <span class="logo-text">NEXUS<span class="logo-os">OS</span></span>
+            <span class="logo-text">AUTO<span class="logo-os">CRAT</span></span>
             <span class="version-badge">v2.0</span>
         </div>
         <div class="top-stats" role="status" aria-label="System statistics">
@@ -108,24 +108,24 @@
                         <span class="dot yellow"></span>
                         <span class="dot green"></span>
                     </div>
-                    <span class="terminal-title">nexus@system ~</span>
+                    <span class="terminal-title">autocrat@system ~</span>
                     <button class="btn-icon" id="clear-terminal" title="Clear terminal" aria-label="Clear terminal">🗑️</button>
                 </div>
                 <div class="terminal-output" id="terminal-output" role="log" aria-live="polite">
                     <div class="output-line welcome">
                         <pre>
- ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗     ██████╗ ███████╗
- ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝    ██╔═══██╗██╔════╝
- ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗    ██║   ██║███████╗
- ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║    ██║   ██║╚════██║
- ██║ ╚████║███████╗██╔╝ ██╗╚██████╔╝███████║    ╚██████╔╝███████║
- ╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝     ╚═════╝ ╚══════╝
-                                                            v2.0.0
+  █████╗ ██╗   ██╗████████╗ ██████╗  ██████╗██████╗  █████╗ ████████╗
+ ██╔══██╗██║   ██║╚══██╔══╝██╔═══██╗██╔════╝██╔══██╗██╔══██╗╚══██╔══╝
+ ███████║██║   ██║   ██║   ██║   ██║██║     ██████╔╝███████║   ██║
+ ██╔══██║██║   ██║   ██║   ██║   ██║██║     ██╔══██╗██╔══██║   ██║
+ ██║  ██║╚██████╔╝   ██║   ╚██████╔╝╚██████╗██║  ██║██║  ██║   ██║
+ ╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
+                        Your PC, on autopilot. v2.0.0
                         </pre>
                         <p>Type <span class="cmd-hint" role="button" tabindex="0">help</span> for commands •
                             <span class="cmd-hint" role="button" tabindex="0">plugins</span> to see modules •
                             <span class="cmd-hint" role="button" tabindex="0">status</span> for AI brain stats •
-                            Powered by ML + Gemini LLM — try anything in natural language!</p>
+                            Powered by ML + Ollama LLM — try anything in natural language!</p>
                     </div>
                 </div>
                 <!-- Autocomplete suggestions -->

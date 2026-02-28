@@ -36,7 +36,7 @@ BANNER = """
  ██║  ██║╚██████╔╝   ██║   ╚██████╔╝╚██████╗██║  ██║██║  ██║   ██║
  ╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
 \033[0m
-\033[2m  AI-Powered Desktop Automation OS v1.0.0\033[0m
+\033[2m  Your PC, on autopilot.  v2.0.0\033[0m
 """
 
 
@@ -65,7 +65,13 @@ def main():
 
     total_commands = sum(len(p.get_commands()) for p in engine.plugins.values())
     log.info(f"Autocrat ready — {len(engine.plugins)} plugins, {total_commands} commands")
-
+    # \u2500\u2500 JARVIS-style startup greeting \u2500\u2500
+    greeting = engine.personality.greeting(
+        plugins_count=len(engine.plugins),
+        commands_count=total_commands,
+        brain_ready=engine.brain._ready,
+    )
+    print(f"\033[36m{greeting}\033[0m")
     # ── Load config ──
     import yaml
     cfg = {}
@@ -183,39 +189,67 @@ def run_web(engine, host, port, bus=None, heartbeat=None):
 
 
 def run_cli(engine):
-    """Interactive CLI loop."""
+    """Interactive CLI loop — JARVIS-style."""
     from nexus.cli import format_result
 
     while True:
         try:
             cmd = input("\033[35m❯ \033[0m").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n\033[2mGoodbye! 👋\033[0m")
+            print(f"\n\033[2m{engine.personality.farewell()}\033[0m")
             break
 
         if not cmd:
             continue
 
         if cmd.lower() in ("exit", "quit", "q"):
-            print("\033[2mShutting down Autocrat... 👋\033[0m")
+            print(f"\033[2m{engine.personality.farewell()}\033[0m")
             break
 
         result = engine.execute(cmd)
 
         if result.get("success"):
             data = result.get("result", result.get("results"))
-            if data is not None:
-                print(format_result(data))
+
+            # Multi-step result narration
+            if result.get("chain_length") and result.get("results"):
+                narration = engine.personality.narrate_multi(
+                    result["results"],
+                    duration_ms=result.get("duration_ms", 0),
+                )
+                print(f"\033[36m  {narration}\033[0m")
+                for i, r in enumerate(result["results"], 1):
+                    sub_data = r.get("result", r.get("results"))
+                    if sub_data is not None:
+                        print(f"\033[2m  [{i}]\033[0m {format_result(sub_data)}")
+            elif data is not None:
+                # Single result — use personality narration for simple confirmations
+                if isinstance(data, str) and len(data) < 200:
+                    print(f"\033[36m  {data}\033[0m")
+                else:
+                    print(format_result(data))
 
             duration = result.get("duration_ms")
-            if duration is not None:
+            if duration is not None and duration > 100:
                 print(f"\033[2m  ⏱ {duration}ms\033[0m")
+
+            # Proactive suggestions
+            suggestions = result.get("suggestions")
+            if suggestions:
+                hint = engine.personality.suggest(suggestions)
+                if hint:
+                    print(f"\033[33m{hint}\033[0m")
         else:
             error = result.get("error", "Unknown error")
             print(f"\033[31m  ✗ {error}\033[0m")
             hint = result.get("hint")
             if hint:
                 print(f"\033[33m  💡 {hint}\033[0m")
+            suggestions = result.get("suggestions")
+            if suggestions:
+                sugg_text = engine.personality.suggest(suggestions)
+                if sugg_text:
+                    print(f"\033[33m{sugg_text}\033[0m")
 
         print()
 

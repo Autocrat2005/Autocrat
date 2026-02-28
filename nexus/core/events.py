@@ -1,5 +1,5 @@
 """
-NEXUS OS — Event Bus
+Autocrat — Event Bus
 Pub/sub system for inter-module communication.
 """
 

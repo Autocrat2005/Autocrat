@@ -1,5 +1,5 @@
 """
-NEXUS OS — Intelligence Plugin
+Autocrat — Intelligence Plugin
 Smart contextual actions: browser history search, recent Gemini chats,
 system diagnostics, quick math, recent files, smart search, and more.
 """

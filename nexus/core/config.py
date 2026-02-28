@@ -1,5 +1,5 @@
 """
-NEXUS OS — Configuration Manager
+Autocrat — Configuration Manager
 YAML-based config with defaults, auto-creation, and hot reload.
 """
 
@@ -12,7 +12,7 @@ log = get_logger("config")
 
 DEFAULT_CONFIG = {
     "nexus": {
-        "name": "NEXUS OS",
+        "name": "Autocrat",
         "version": "1.0.0",
         "log_level": "INFO",
     },

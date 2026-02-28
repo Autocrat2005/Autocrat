@@ -1,5 +1,5 @@
 """
-NEXUS OS — Process Controller Plugin
+Autocrat — Process Controller Plugin
 List, kill, start, monitor, and inspect system processes.
 """
 

@@ -1,5 +1,5 @@
 """
-NEXUS OS — Behavioral Learner
+Autocrat — Behavioral Learner
 SQLite-backed pattern tracker that learns from user behavior.
 Tracks command frequency, time patterns, and sequences.
 """

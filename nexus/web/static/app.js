@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   NEXUS OS — Web Control Panel v2.0
+   Autocrat — Web Control Panel v2.0
    WebSocket, command execution, live updates, tab switching,
    Quick Actions, autocomplete, keyboard shortcuts, accessibility
    ═══════════════════════════════════════════════════════════════════ */

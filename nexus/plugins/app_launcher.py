@@ -1,5 +1,5 @@
 """
-NEXUS OS — App Launcher Plugin
+Autocrat — App Launcher Plugin
 Open apps, URLs, folders. Detect installed apps.
 """
 

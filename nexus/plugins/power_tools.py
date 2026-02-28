@@ -1,5 +1,5 @@
 """
-NEXUS OS — Power Tools Plugin
+Autocrat — Power Tools Plugin
 Power management, quick notes, timers, and system shortcuts.
 """
 

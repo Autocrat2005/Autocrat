@@ -1,5 +1,5 @@
 """
-NEXUS OS — Command Parser
+Autocrat — Command Parser
 Parses natural text commands into (plugin, action, args) tuples.
 Supports direct commands, aliases, fuzzy matching, and chained commands.
 """

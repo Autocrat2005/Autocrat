@@ -1,5 +1,5 @@
 """
-NEXUS OS — System Info Plugin
+Autocrat — System Info Plugin
 CPU, RAM, disk, battery, network stats, uptime.
 """
 

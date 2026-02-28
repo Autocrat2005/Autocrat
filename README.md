@@ -166,7 +166,7 @@ Every input goes through four layers. The fastest one that understands you wins 
 
 ### The Agentic Engine (v2.0)
 
-When the LLM *does* fire, it's not dumb prompt engineering. It's proper agent-style tool use:
+When the LLM _does_ fire, it's not dumb prompt engineering. It's proper agent-style tool use:
 
 ```
 Input: "close spotify and take a screenshot"
@@ -187,13 +187,13 @@ Input: "close spotify and take a screenshot"
 <details>
 <summary><strong>v1.0 → v2.0 comparison (click to expand)</strong></summary>
 
-| | v1.0 (Old) | v2.0 (Current) |
-|---|---|---|
+|                   | v1.0 (Old)                                                                          | v2.0 (Current)                                                                    |
+| ----------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | **LLM ↔ Actions** | All 160+ commands in one prompt. LLM returns JSON. Malformed JSON → repair → retry. | Native tool calling via `/api/chat`. Model picks tools directly. No JSON hacking. |
-| **Context** | Entire catalog every time (~4K tokens wasted). | Smart filter → only ~30 relevant commands. 80% fewer tokens. |
-| **Multi-step** | Sequential. 3 actions = 3x the time. | Parallel. Independent actions run concurrently. |
-| **Web responses** | Spinner → wait → full text blob appears. | Token-by-token streaming via SSE. Blinking cursor. |
-| **Model compat** | One prompting style. Switch model = rewrite. | Auto-detects capabilities. Falls back gracefully. |
+| **Context**       | Entire catalog every time (~4K tokens wasted).                                      | Smart filter → only ~30 relevant commands. 80% fewer tokens.                      |
+| **Multi-step**    | Sequential. 3 actions = 3x the time.                                                | Parallel. Independent actions run concurrently.                                   |
+| **Web responses** | Spinner → wait → full text blob appears.                                            | Token-by-token streaming via SSE. Blinking cursor.                                |
+| **Model compat**  | One prompting style. Switch model = rewrite.                                        | Auto-detects capabilities. Falls back gracefully.                                 |
 
 </details>
 
@@ -203,25 +203,25 @@ Input: "close spotify and take a screenshot"
 
 ### 17 Built-In Plugins (160+ commands)
 
-| Category | Plugin | Highlights |
-|----------|--------|-----------|
-| 🪟 **Desktop** | windowManager | Focus, minimize, maximize, resize, snap, tile windows |
-| | appLauncher | Open any app by name — "open chrome", "launch vscode" |
-| | keyboardMouse | Type text, hotkeys, mouse clicks, scroll, drag |
-| ⚙️ **System** | processController | List, kill, monitor processes — "kill chrome", "top processes" |
-| | systemInfo | CPU, RAM, disk, battery, network stats, uptime |
-| | powerTools | Shutdown, restart, sleep, hibernate, lock |
-| | volumeDisplay | Volume up/down/mute, screen brightness |
-| 📁 **Files** | fileOps | Create, read, write, delete, search, move files & folders |
-| | clipboard | Copy, paste, clipboard history |
-| | shellExecutor | Run any shell command with captured output |
-| 🌐 **Web** | cometWebAgent | Headless Playwright browser — navigate, click, extract, screenshot. Uses a ReAct loop for multi-step browsing. |
-| 🤖 **AI** | coreBuilder | **The meta-plugin.** Generates, validates, hot-loads, and auto-heals other plugins at runtime. |
-| | intelligence | Proactive nudges, context probes, system health monitoring |
-| | smartActions | Context-aware compound actions |
-| 📋 **Automation** | workflowEngine | Chain multi-step workflows. LLM can generate workflow YAML from plain English. |
-| | taskScheduler | Schedule recurring commands (cron-style) |
-| | screenIntel | Screenshots, OCR text extraction, screen region capture |
+| Category          | Plugin            | Highlights                                                                                                     |
+| ----------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| 🪟 **Desktop**    | windowManager     | Focus, minimize, maximize, resize, snap, tile windows                                                          |
+|                   | appLauncher       | Open any app by name — "open chrome", "launch vscode"                                                          |
+|                   | keyboardMouse     | Type text, hotkeys, mouse clicks, scroll, drag                                                                 |
+| ⚙️ **System**     | processController | List, kill, monitor processes — "kill chrome", "top processes"                                                 |
+|                   | systemInfo        | CPU, RAM, disk, battery, network stats, uptime                                                                 |
+|                   | powerTools        | Shutdown, restart, sleep, hibernate, lock                                                                      |
+|                   | volumeDisplay     | Volume up/down/mute, screen brightness                                                                         |
+| 📁 **Files**      | fileOps           | Create, read, write, delete, search, move files & folders                                                      |
+|                   | clipboard         | Copy, paste, clipboard history                                                                                 |
+|                   | shellExecutor     | Run any shell command with captured output                                                                     |
+| 🌐 **Web**        | cometWebAgent     | Headless Playwright browser — navigate, click, extract, screenshot. Uses a ReAct loop for multi-step browsing. |
+| 🤖 **AI**         | coreBuilder       | **The meta-plugin.** Generates, validates, hot-loads, and auto-heals other plugins at runtime.                 |
+|                   | intelligence      | Proactive nudges, context probes, system health monitoring                                                     |
+|                   | smartActions      | Context-aware compound actions                                                                                 |
+| 📋 **Automation** | workflowEngine    | Chain multi-step workflows. LLM can generate workflow YAML from plain English.                                 |
+|                   | taskScheduler     | Schedule recurring commands (cron-style)                                                                       |
+|                   | screenIntel       | Screenshots, OCR text extraction, screen region capture                                                        |
 
 ### Self-Writing Plugins (the JARVIS part)
 
@@ -282,11 +282,11 @@ Tunnel it with ngrok and you have a **remote AI assistant for your PC** accessib
 
 Nothing runs unless validated. Three layers of defense:
 
-| Layer | Scope | What it does |
-|-------|-------|-------------|
-| **AST Sandbox** | Generated plugins | Parses code before execution. Blocks `eval`, `exec`, `ctypes`, `winreg`, `os.system`, `subprocess.Popen`, `shutil.rmtree`. Verifies proper `NexusPlugin` structure. |
-| **Network Permissions** | Generated plugins | Scans every URL/domain in code. Unapproved domains trigger Allow Once / Allow Always / Block prompt. No silent network access. |
-| **Destructive Action Gate** | All plugins | `shutdown`, `restart`, `kill`, `delete` require explicit approval. Alert pushed to all clients (web, Telegram, VS Code). |
+| Layer                       | Scope             | What it does                                                                                                                                                        |
+| --------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AST Sandbox**             | Generated plugins | Parses code before execution. Blocks `eval`, `exec`, `ctypes`, `winreg`, `os.system`, `subprocess.Popen`, `shutil.rmtree`. Verifies proper `NexusPlugin` structure. |
+| **Network Permissions**     | Generated plugins | Scans every URL/domain in code. Unapproved domains trigger Allow Once / Allow Always / Block prompt. No silent network access.                                      |
+| **Destructive Action Gate** | All plugins       | `shutdown`, `restart`, `kill`, `delete` require explicit approval. Alert pushed to all clients (web, Telegram, VS Code).                                            |
 
 > Think of it like Android permissions, but for your desktop AI.
 
@@ -340,8 +340,8 @@ ai:
   llm_backend: local_ollama
   local_model: qwen2.5-coder:3b
   local_base_url: http://127.0.0.1:11434
-  use_native_tools: true          # native Ollama tool calling
-  strict_json_mode: true          # JSON fallback for older models
+  use_native_tools: true # native Ollama tool calling
+  strict_json_mode: true # JSON fallback for older models
 
 system:
   safe_mode: false
@@ -360,12 +360,12 @@ Domains get added automatically when you approve "Allow Always" through the secu
 
 ### Requirements
 
-| What | Why |
-|------|-----|
-| Python 3.10+ | Modern syntax, type hints |
-| [Ollama](https://ollama.com/) | Local LLM (qwen2.5-coder:3b) |
-| Windows 10/11 | Win32 system automation APIs |
-| ~2GB RAM | Sentence-transformer + Ollama overhead |
+| What                          | Why                                    |
+| ----------------------------- | -------------------------------------- |
+| Python 3.10+                  | Modern syntax, type hints              |
+| [Ollama](https://ollama.com/) | Local LLM (qwen2.5-coder:3b)           |
+| Windows 10/11                 | Win32 system automation APIs           |
+| ~2GB RAM                      | Sentence-transformer + Ollama overhead |
 
 Key packages: `fastapi` · `uvicorn` · `httpx` · `sentence-transformers` · `playwright` · `psutil` · `pyautogui` · `pycaw` · `google-generativeai` (optional)
 
@@ -412,6 +412,6 @@ MIT — See [LICENSE](LICENSE).
 
 If this project is useful, consider giving it a ⭐
 
-*"Sir, I've prepared a flight plan..."* — Well, not yet. But we're getting there.
+_"Sir, I've prepared a flight plan..."_ — Well, not yet. But we're getting there.
 
 </div>

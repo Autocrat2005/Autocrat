@@ -1,5 +1,5 @@
 """
-NEXUS OS — Shell Executor Plugin
+Autocrat — Shell Executor Plugin
 Run any shell/PowerShell command with output capture and timeout.
 """
 

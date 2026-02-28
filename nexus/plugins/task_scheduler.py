@@ -1,5 +1,5 @@
 """
-NEXUS OS — Task Scheduler Plugin
+Autocrat — Task Scheduler Plugin
 Cron-like scheduled task execution using APScheduler.
 """
 

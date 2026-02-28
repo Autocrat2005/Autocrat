@@ -1,5 +1,5 @@
 """
-NEXUS OS — Telegram Bot Integration
+Autocrat — Telegram Bot Integration
 Connects NEXUS to Telegram: send commands from your phone, get results back.
 Also receives forwarded results from other channels (web, VS Code, heartbeat).
 
@@ -201,7 +201,7 @@ class TelegramBot:
         name = update.effective_user.first_name or "there"
 
         welcome = (
-            f"👋 Hey {name}! I'm <b>NEXUS OS</b>.\n\n"
+            f"👋 Hey {name}! I'm <b>Autocrat</b>.\n\n"
             f"🆔 Your chat ID: <code>{chat_id}</code>\n\n"
             f"Send me any command and I'll execute it on your PC:\n"
             f"• <code>volume 50</code>\n"
@@ -226,7 +226,7 @@ class TelegramBot:
             return
 
         help_text = (
-            "<b>🧠 NEXUS OS — Telegram Control</b>\n\n"
+            "<b>🧠 Autocrat — Telegram Control</b>\n\n"
             "<b>Commands:</b>\n"
             "/status — System status\n"
             "/plugins — List plugins\n"

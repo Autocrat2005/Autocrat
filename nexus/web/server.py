@@ -1,5 +1,5 @@
 """
-NEXUS OS — FastAPI Web Server
+Autocrat — FastAPI Web Server
 REST API + WebSocket for the control panel.
 Token-based auth protects command execution endpoints.
 Cross-channel: WebSocket clients can identify as "vscode" or "web" source.
@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from nexus.core.engine import NexusEngine
 from nexus.core.logger import NexusLogger
 
-app = FastAPI(title="NEXUS OS", version="1.0.0")
+app = FastAPI(title="Autocrat", version="2.0.0")
 engine: NexusEngine = None
 ws_clients: Set[WebSocket] = set()
 # Track client sources: ws → "vscode" | "web" | "dashboard"
@@ -172,7 +172,19 @@ async def root():
     index_path = os.path.join(static_dir, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return HTMLResponse("<h1>NEXUS OS</h1><p>Static files not found.</p>")
+    return HTMLResponse("<h1>Autocrat</h1><p>Static files not found.</p>")
+
+
+@app.get("/api/greeting")
+async def get_greeting():
+    """Return a JARVIS-style startup greeting for the web dashboard."""
+    if engine and hasattr(engine, "personality"):
+        plugins_count = len(engine.plugins) if engine.plugins else 0
+        commands_count = sum(len(p.get_commands()) for p in engine.plugins.values()) if engine.plugins else 0
+        brain_ready = engine.brain is not None
+        greeting = engine.personality.greeting(plugins_count, commands_count, brain_ready)
+        return {"greeting": greeting}
+    return {"greeting": "Autocrat online. Ready for commands."}
 
 
 @app.get("/api/plugins")

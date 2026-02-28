@@ -1,5 +1,5 @@
 """
-NEXUS OS — Keyboard & Mouse Plugin
+Autocrat — Keyboard & Mouse Plugin
 Simulate keyboard input, hotkeys, mouse clicks, moves, scrolls, and drags.
 """
 

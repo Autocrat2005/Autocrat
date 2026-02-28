@@ -1,5 +1,5 @@
 """
-NEXUS OS — Message Bus (Cross-Channel Communication)
+Autocrat — Message Bus (Cross-Channel Communication)
 Routes commands and results between channels: Web, Telegram, Discord, VS Code.
 Any input source can send a command, and results are dispatched to all
 configured output channels.
@@ -37,7 +37,7 @@ class Message:
 
 class MessageBus:
     """
-    Central message router for NEXUS OS.
+    Central message router for Autocrat.
 
     Channels register themselves and provide a callback for receiving results.
     When a command arrives from any source, results are broadcast to all

@@ -1,5 +1,5 @@
 """
-NEXUS OS — Core Engine
+Autocrat — Core Engine
 The brain of the system. Routes commands, manages plugins, tracks history.
 Now with AI Brain for intent classification and behavioral learning.
 """
@@ -20,6 +20,7 @@ from nexus.core.config import Config
 from nexus.core.brain import NexusBrain
 from nexus.core.learner import BehaviorLearner
 from nexus.core.ai_engine import GeminiEngine
+from nexus.core.personality import Personality
 
 log = get_logger("engine")
 
@@ -35,7 +36,12 @@ class NexusEngine:
         self.history: List[Dict[str, Any]] = []
         self._max_history = 1000
         self._last_command = None
+        self._last_action = None
+        self._last_result = None
         self._pending_confirmations: Dict[str, Dict[str, Any]] = {}
+
+        # JARVIS-style personality
+        self.personality = Personality()
 
         # AI Brain + Behavioral Learner
         self.brain = NexusBrain()
@@ -151,6 +157,16 @@ class NexusEngine:
             return {"success": False, "error": "Empty command", "timestamp": timestamp, "duration_ms": 0}
         if len(text) > 2000:
             return {"success": False, "error": "Command too long (max 2000 chars)", "timestamp": timestamp, "duration_ms": 0}
+
+        # Session memory — handle follow-up commands
+        text_lower = text.lower().strip()
+        if text_lower in ("do that again", "repeat", "again", "redo") and self._last_command:
+            text = self._last_command
+        elif text_lower in ("what did i just do", "what was that", "last command"):
+            if self._last_command:
+                return {"success": True, "result": f"Your last command was: '{self._last_command}'", "timestamp": timestamp, "duration_ms": 0}
+            else:
+                return {"success": True, "result": "No previous commands in this session.", "timestamp": timestamp, "duration_ms": 0}
 
         # Handle approval / rejection commands
         approval_result = self._handle_confirmation_command(text, timestamp)
@@ -356,6 +372,14 @@ class NexusEngine:
             active_window=self._get_active_window_title(),
         )
         self._last_command = text
+        self._last_action = intent_match["action"] if intent_match else None
+        self._last_result = final
+
+        # Inject proactive suggestions for successful actions
+        if final.get("success") and not final.get("suggestions"):
+            chain_s = self.learner.get_chain_suggestions(text)
+            if chain_s:
+                final["suggestions"] = [s["command"] for s in chain_s[:3]]
 
         self.events.emit("command.executed", {"text": text, "result": final})
         return final
@@ -594,7 +618,7 @@ class NexusEngine:
         if action == "help":
             lines = [
                 "╔══════════════════════════════════════════╗",
-                "║          NEXUS OS — Command Help         ║",
+                "║          Autocrat — Command Help         ║",
                 "╚══════════════════════════════════════════╝",
                 "",
             ]

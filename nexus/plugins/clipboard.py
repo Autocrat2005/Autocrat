@@ -1,5 +1,5 @@
 """
-NEXUS OS — Clipboard Plugin
+Autocrat — Clipboard Plugin
 Read, write, and track clipboard history.
 """
 

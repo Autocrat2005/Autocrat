@@ -1,5 +1,5 @@
 """
-NEXUS OS — Window Manager Plugin
+Autocrat — Window Manager Plugin
 Control windows: list, focus, close, minimize, maximize, move, resize, snap.
 """
 

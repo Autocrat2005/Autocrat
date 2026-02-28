@@ -1,5 +1,5 @@
 """
-NEXUS OS — Workflow Engine Plugin
+Autocrat — Workflow Engine Plugin
 Chain multiple commands into named, reusable, saveable workflows.
 Supports cross-domain dynamic context so data flows between steps.
 
@@ -197,7 +197,7 @@ class WorkflowEnginePlugin(NexusPlugin):
 
     def _build_generation_prompt(self, description: str) -> str:
         """Construct the LLM prompt that teaches the model how to write workflow YAML."""
-        return f"""You are NEXUS OS workflow generator.
+        return f"""You are Autocrat workflow generator.
 Given a user goal, produce a multi-step YAML workflow.
 
 AVAILABLE COMMANDS:

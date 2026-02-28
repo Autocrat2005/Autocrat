@@ -1,5 +1,5 @@
 """
-NEXUS OS — Structured Logging System
+Autocrat — Structured Logging System
 Color output, file rotation, WebSocket broadcast.
 """
 
@@ -66,7 +66,7 @@ class ColorFormatter(logging.Formatter):
 
 
 class NexusLogger:
-    """Central logging facility for NEXUS OS."""
+    """Central logging facility for Autocrat."""
 
     _instance: Optional["NexusLogger"] = None
     _initialized = False

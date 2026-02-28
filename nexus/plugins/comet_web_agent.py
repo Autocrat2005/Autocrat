@@ -1,5 +1,5 @@
 """
-NEXUS OS — Comet Web Agent Plugin
+Autocrat — Comet Web Agent Plugin
 Deep web automation using Playwright.
 """
 

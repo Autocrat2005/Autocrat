@@ -1,5 +1,5 @@
 """
-NEXUS OS — Screen Intelligence Plugin
+Autocrat — Screen Intelligence Plugin
 Screenshot, OCR, screen region capture, find-on-screen.
 """
 
