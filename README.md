@@ -2,310 +2,297 @@
 
 # ⚡ Autocrat
 
-**Your PC, on autopilot.**
+### Open-source JARVIS for your Windows PC.
 
-An AI-powered desktop automation OS that understands natural language, writes its own plugins at runtime, and asks before it touches the internet.
+One prompt. Full system control. It builds the tools it doesn't have.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Ollama](https://img.shields.io/badge/LLM-Ollama-FF6F00.svg)](https://ollama.com/)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white)]()
+[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg?logo=windows&logoColor=white)]()
 [![Plugins](https://img.shields.io/badge/plugins-17%20built--in-22C55E.svg)]()
 [![Commands](https://img.shields.io/badge/commands-160%2B-22C55E.svg)]()
 
 <br>
 
-<img src="screenshots/banner.png" alt="Autocrat Banner" width="680">
+<img src="screenshots/banner.png" alt="Autocrat — JARVIS for your PC" width="700">
 
 <br>
 
-[Quick Start](#-quick-start) · [What's New](#-whats-new-in-v20) · [Features](#-features) · [Usage](#-usage-examples) · [Architecture](#-architecture) · [Config](#%EF%B8%8F-configuration)
+[See It In Action](#-see-it-in-action) · [Quick Start](#-quick-start) · [How It Thinks](#-how-it-thinks) · [What It Can Do](#-what-it-can-do) · [Architecture](#-under-the-hood)
 
 </div>
 
 ---
 
-## 🧠 The Idea
+## 💬 See It In Action
 
-Most automation tools make you learn their scripting language. Autocrat flips that — **you describe what you want in plain English, and it figures out the rest.**
+> Autocrat understands you like an assistant, not a terminal.
 
-It's not just a command runner. It's a self-extending system: if a capability doesn't exist yet, the local LLM generates a validated plugin on the fly, loads it without restarting, and if the new code tries to hit an unapproved domain, the system pauses and asks you — like Android asking for camera permissions.
+### Just talk to it
 
-> **TL;DR** — Tell your computer what to do. It does it. If it can't, it builds the tool first.
+```
+You:       "close spotify, mute the volume, and take a screenshot"
+Autocrat:   ✓ Killed process: Spotify.exe
+            ✓ Volume muted
+            ✓ Screenshot saved → screenshots/capture_20260301_143022.png
+            ⏱ 340ms (3 actions, parallel)
+```
 
----
+### Ask it to build tools that don't exist yet
 
-## 🔥 What's New in v2.0
+```
+You:       "build a plugin that monitors my CPU temperature and alerts me when it crosses 80°C"
+Autocrat:   🔨 Generating plugin: cpu_temp_monitor
+            🔍 AST validation passed (no unsafe patterns)
+            ✅ Plugin loaded — 2 new commands registered
+            → Try: "check cpu temp" or "set temp alert 80"
+```
 
-> The v2.0 update replaces the old prompt-engineering approach with proper agentic capabilities. Here's what's actually different:
+### Let it browse the web for you
 
-| | Before (v1.0) | After (v2.0) |
-|---|---|---|
-| **LLM ↔ Actions** | All 160+ commands stuffed into a text prompt. LLM returns hand-crafted JSON. If the JSON is malformed → repair loop → retry → hope it works. | **Native tool calling** via Ollama's `/api/chat`. Commands registered as structured function definitions. Model picks the right tool + params directly. No JSON hacking. |
-| **Context sent to LLM** | Entire command catalog dumped every time (160+ entries, ~4K tokens wasted). Small models choke on the noise. | **Smart context window** — keyword scoring with synonym expansion. Only the top ~30 relevant commands reach the LLM. 80% fewer tokens, better accuracy. |
-| **Multi-step execution** | Steps run one after another, sequentially. "minimize all windows, mute volume, take a screenshot" = 3 round-trips in series. | **Parallel execution** — independent steps fire concurrently via a thread pool. Same 3 actions finish in the time of the slowest one. |
-| **Web UI responses** | Spinner → blank screen → full text blob appears all at once. | **Streaming** — tokens arrive one-by-one via SSE. Blinking cursor. You read while the model thinks. |
-| **Model compatibility** | Hard-coded for one prompting style. Switch models = rewrite prompts. | **Auto-detection** — probes the model on startup, enables native tools if supported, falls back to JSON mode gracefully. |
+```
+You:       "go to github.com/trending and tell me the top 3 repos today"
+Autocrat:   🌐 Launching headless browser...
+            📄 Navigating to github.com/trending
+            🔍 Extracting trending repositories...
 
-### Why not LangChain?
+            1. google/gemma-3 — Lightweight open model by Google DeepMind
+            2. ollama/ollama — Get up and running with large language models
+            3. microsoft/TypeScript — TypeScript language and compiler
+            ⏱ 2.4s
+```
 
-We evaluated LangChain and decided against it. Here's why:
+### Control your PC from your phone
 
-- **+50MB of dependencies** for functionality Autocrat already has natively (tool routing, output parsing, retry logic)
-- **Opaque abstractions** — when a tool call fails inside 4 layers of LangChain wrappers, good luck debugging it
-- **Ollama already exposes a tool-calling API** — wrapping a wrapper around a wrapper adds latency, not capability
+```
+You (from phone, via ngrok):   "lock my pc"
+Autocrat:                       ⚠️ Destructive action: lock workstation
+                                Approve? [yes/no]
+You:                            "yes"
+Autocrat:                       ✓ Workstation locked.
+```
 
-Instead, we implemented the four specific things that actually matter — native tool calling, smart filtering, parallel execution, and streaming — in ~500 lines of focused Python. No new dependencies.
+### Chain complex automations in plain English
+
+```
+You:       "create a folder called 'DailyReport', take a screenshot, save it there,
+            then write a text file with today's CPU and RAM usage"
+Autocrat:   ✓ Created folder: DailyReport
+            ✓ Screenshot → DailyReport/screen_20260301.png
+            ✓ System stats written → DailyReport/stats_20260301.txt
+            ⏱ 580ms (workflow: 4 steps)
+```
+
+### Ask it anything — it's also a chatbot
+
+```
+You:       "explain the difference between threads and processes in python"
+Autocrat:   A process is an independent program with its own memory space...
+            [streams token-by-token with a blinking cursor]
+```
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-# 1. Clone & set up
+# 1. Clone & install
 git clone https://github.com/Autocrat2005/Autocrat.git
 cd Autocrat
 python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 2. Pull the LLM
+# 2. Pull the brain
 ollama pull qwen2.5-coder:3b
-ollama serve                     # keep this running
+ollama serve                     # keep running in background
 
-# 3. Launch
-python main.py                   # CLI mode
-python main.py --web             # web dashboard on http://127.0.0.1:9000
+# 3. Launch your assistant
+python main.py                   # CLI — talk in the terminal
+python main.py --web             # Web dashboard — http://127.0.0.1:9000
 ```
 
-Control it from your phone by tunneling with [ngrok](ngrok_setup.md):
+### Access from anywhere
 
 ```bash
-ngrok http 9000   # → share the URL, open on any device
+ngrok http 9000                  # tunnel it
+# → Open the ngrok URL on your phone, tablet, or another PC
 ```
+
+You now have a JARVIS-style AI controlling your desktop from any device on earth.
 
 ---
 
-## ✨ Features
+## 🧠 How It Thinks
 
-### Self-Writing Plugins
+### The 4-Stage Brain
 
-Describe what you need. Autocrat generates the code, validates it through an AST sandbox, and hot-loads it — no restart.
-
-```
-> build plugin that batch renames files in a folder by adding a prefix and timestamp
-```
-
-If the generated code tries to reach an external API, the system pauses:
+Every input goes through four layers. The fastest one that understands you wins — the rest don't even fire.
 
 ```
-⚠️  Plugin 'weather_fetcher' requests network access to: wttr.in
+ "open chrome"
+      │
+      ▼
+ ┌──────────────────────────────────────────────────────────┐
+ │  Stage 1: Regex Parser                          < 1ms    │
+ │  200+ hand-tuned patterns. Instant recognition.          │
+ │  "open chrome" → appLauncher.launch(name="chrome") ✅    │
+ └──────────────────────────────────────────────────────────┘
+      ↓ (only if Stage 1 didn't match)
 
-  [1] Allow Once       — this session only
-  [2] Allow Always     — persist to config
-  [3] Block & Delete   — remove the plugin
+ ┌──────────────────────────────────────────────────────────┐
+ │  Stage 2: ML Brain                              ~ 5ms    │
+ │  Sentence-transformer (all-MiniLM-L6-v2).                │
+ │  Semantic similarity against learned intents.             │
+ └──────────────────────────────────────────────────────────┘
+      ↓ (only if Stage 2 confidence < threshold)
+
+ ┌──────────────────────────────────────────────────────────┐
+ │  Stage 3: LLM (Ollama)                          ~ 1-3s   │
+ │  Smart context filter → 30 most relevant commands.       │
+ │  Native tool calling → model picks function + params.    │
+ │  "play music in my downloads folder" → complex mapping.  │
+ └──────────────────────────────────────────────────────────┘
+      ↓ (only if no action matched)
+
+ ┌──────────────────────────────────────────────────────────┐
+ │  Stage 4: Conversational                        ~ 1-3s   │
+ │  General knowledge. "What's a mutex?" → answer streams   │
+ │  token-by-token to the web UI via SSE.                   │
+ └──────────────────────────────────────────────────────────┘
 ```
 
-No unauthorized network calls. Ever.
+**90% of commands resolve in Stage 1 or 2 — under 10ms.** The LLM is a smart fallback, not the bottleneck.
 
-### Agentic LLM Engine
+### The Agentic Engine (v2.0)
 
-The core of v2.0. Four capabilities working together:
+When the LLM *does* fire, it's not dumb prompt engineering. It's proper agent-style tool use:
 
 ```
-User input: "close spotify and take a screenshot"
-     │
-     ▼
- ┌────────────────────────────────────────────────────────────┐
- │  Smart Context Window                                      │
- │  160+ commands → keyword scoring → synonym expansion       │
- │  → sends only ~30 relevant commands to the LLM            │
- └────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
- ┌────────────────────────────────────────────────────────────┐
- │  Native Tool Calling (Ollama /api/chat)                    │
- │  Model sees structured function definitions, not raw text  │
- │  → returns: tool_call(processController.kill, {name:       │
- │     "spotify"}) + tool_call(screenIntel.screenshot, {})    │
- └────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
- ┌────────────────────────────────────────────────────────────┐
- │  Parallel Executor (ThreadPoolExecutor)                    │
- │  Different plugins → fire concurrently                     │
- │  processController.kill ──┐                                │
- │  screenIntel.screenshot ──┤── both run at the same time    │
- │                           └── return merged results        │
- └────────────────────────────────────────────────────────────┘
+Input: "close spotify and take a screenshot"
+  │
+  ├─ Smart Context Window
+  │    160+ commands → keyword scoring + synonyms → top 30 relevant sent
+  │
+  ├─ Native Tool Calling (Ollama /api/chat)
+  │    Model receives structured function definitions
+  │    Returns: tool_call(processController.kill, {name: "spotify"})
+  │           + tool_call(screenIntel.screenshot, {})
+  │
+  └─ Parallel Executor
+       Different plugins → fire concurrently (ThreadPoolExecutor)
+       Both finish in ~200ms instead of ~400ms sequentially
 ```
-
-For conversational responses (no action needed), the answer **streams token-by-token** to the web UI via SSE — you read while the model thinks.
-
-### 4-Stage AI Pipeline
-
-Every command flows through four stages — the first one that matches wins:
-
-| Stage | Engine         | Speed | What it does                                         |
-| ----- | -------------- | ----- | ---------------------------------------------------- |
-| 1     | Regex parser   | <1ms  | Exact pattern matching (200+ patterns)               |
-| 2     | ML Brain       | ~5ms  | Sentence-transformer embeddings (`all-MiniLM-L6-v2`) |
-| 3     | Local LLM      | ~1-3s | Ollama with native tool calling or structured JSON   |
-| 4     | Conversational | ~1-3s | General knowledge answers when no action matches     |
-
-Most commands hit Stage 1 or 2 and resolve in under 10ms. The LLM only fires when the fast layers can't figure it out.
-
-### Remote Control
-
-Start the web server, tunnel it with ngrok, and control your PC from any browser — phone, tablet, another machine. The dashboard includes:
-
-- Live terminal with autocomplete
-- System dashboard (CPU / RAM / disk gauges)
-- Plugin explorer with clickable commands
-- Command history
-- Workflow builder
-
-### 17 Built-In Plugins
 
 <details>
-<summary><strong>Click to expand full plugin list</strong></summary>
+<summary><strong>v1.0 → v2.0 comparison (click to expand)</strong></summary>
 
-| Plugin                | What it does                                                       |
-| --------------------- | ------------------------------------------------------------------ |
-| **windowManager**     | Focus, minimize, maximize, resize, snap windows                    |
-| **processController** | List, kill, monitor processes                                      |
-| **fileOps**           | Create, read, write, delete, search files and folders              |
-| **keyboardMouse**     | Type text, hotkeys, mouse clicks, scrolling                        |
-| **screenIntel**       | Screenshots, OCR, screen region capture                            |
-| **appLauncher**       | Open apps by name                                                  |
-| **clipboard**         | Copy, paste, clipboard history                                     |
-| **systemInfo**        | CPU, RAM, disk, battery, network stats                             |
-| **volumeDisplay**     | Volume up/down/mute, display brightness                            |
-| **shellExecutor**     | Run shell commands with output capture                             |
-| **taskScheduler**     | Schedule recurring commands (cron-style)                           |
-| **workflowEngine**    | Chain multi-step workflows, LLM-generated workflows                |
-| **smartActions**      | Context-aware compound actions                                     |
-| **powerTools**        | Shutdown, restart, sleep, hibernate, lock                          |
-| **intelligence**      | Proactive nudges, context probes, system health                    |
-| **cometWebAgent**     | Headless browser automation with Playwright (ReAct loop)           |
-| **coreBuilder**       | Meta-plugin — generates, validates, loads, and heals other plugins |
+| | v1.0 (Old) | v2.0 (Current) |
+|---|---|---|
+| **LLM ↔ Actions** | All 160+ commands in one prompt. LLM returns JSON. Malformed JSON → repair → retry. | Native tool calling via `/api/chat`. Model picks tools directly. No JSON hacking. |
+| **Context** | Entire catalog every time (~4K tokens wasted). | Smart filter → only ~30 relevant commands. 80% fewer tokens. |
+| **Multi-step** | Sequential. 3 actions = 3x the time. | Parallel. Independent actions run concurrently. |
+| **Web responses** | Spinner → wait → full text blob appears. | Token-by-token streaming via SSE. Blinking cursor. |
+| **Model compat** | One prompting style. Switch model = rewrite. | Auto-detects capabilities. Falls back gracefully. |
 
 </details>
 
-### Safety Architecture
+---
 
-Nothing runs unless it's been validated. Three layers of defense:
+## 🛠 What It Can Do
 
-**Layer 1 — AST Sandbox** (generated plugins)
-- Blocked imports: `ctypes`, `winreg`, raw `socket`
-- Blocked calls: `eval()`, `exec()`, `os.system()`, `subprocess.Popen()`, `shutil.rmtree()`
-- Structure verification: must subclass `NexusPlugin`, must define `get_commands()`
+### 17 Built-In Plugins (160+ commands)
 
-**Layer 2 — Network Permissions** (generated plugins)
-- Every URL in generated code is scanned against a domain allowlist
-- Unapproved domains trigger an interactive Allow Once / Allow Always / Block prompt
-- No silent network access — ever
+| Category | Plugin | Highlights |
+|----------|--------|-----------|
+| 🪟 **Desktop** | windowManager | Focus, minimize, maximize, resize, snap, tile windows |
+| | appLauncher | Open any app by name — "open chrome", "launch vscode" |
+| | keyboardMouse | Type text, hotkeys, mouse clicks, scroll, drag |
+| ⚙️ **System** | processController | List, kill, monitor processes — "kill chrome", "top processes" |
+| | systemInfo | CPU, RAM, disk, battery, network stats, uptime |
+| | powerTools | Shutdown, restart, sleep, hibernate, lock |
+| | volumeDisplay | Volume up/down/mute, screen brightness |
+| 📁 **Files** | fileOps | Create, read, write, delete, search, move files & folders |
+| | clipboard | Copy, paste, clipboard history |
+| | shellExecutor | Run any shell command with captured output |
+| 🌐 **Web** | cometWebAgent | Headless Playwright browser — navigate, click, extract, screenshot. Uses a ReAct loop for multi-step browsing. |
+| 🤖 **AI** | coreBuilder | **The meta-plugin.** Generates, validates, hot-loads, and auto-heals other plugins at runtime. |
+| | intelligence | Proactive nudges, context probes, system health monitoring |
+| | smartActions | Context-aware compound actions |
+| 📋 **Automation** | workflowEngine | Chain multi-step workflows. LLM can generate workflow YAML from plain English. |
+| | taskScheduler | Schedule recurring commands (cron-style) |
+| | screenIntel | Screenshots, OCR text extraction, screen region capture |
 
-**Layer 3 — Destructive Action Confirmation** (all plugins)
-- `shutdown`, `restart`, `kill`, `delete`, `format` require explicit user approval
-- Prompts show the exact command and reasoning before execution
-- WebSocket alerts pushed to all connected clients (web, Telegram, VS Code)
+### Self-Writing Plugins (the JARVIS part)
+
+This is the killer feature. **If a capability doesn't exist, Autocrat builds it on the spot.**
+
+```
+You: "build plugin that fetches current weather for any city"
+```
+
+What happens behind the scenes:
+
+```
+ 1. LLM generates a full NexusPlugin subclass (Python file)
+ 2. AST Validator scans for safety:
+    ✓ No eval/exec/os.system
+    ✓ No ctypes/winreg
+    ✓ Proper NexusPlugin structure
+ 3. Network Scanner detects URL: wttr.in
+    ⚠️ Not in allowlist → Security Prompt:
+    ┌─────────────────────────────────────────────────┐
+    │  Plugin 'weather_fetcher' wants to reach wttr.in │
+    │  [1] Allow Once  [2] Allow Always  [3] Block    │
+    └─────────────────────────────────────────────────┘
+ 4. You pick "Allow Always" → domain saved to config
+ 5. Plugin is importlib-loaded into the live engine
+ 6. New commands registered immediately — no restart
+```
+
+Now you can say:
+
+```
+You:       "weather in Mumbai"
+Autocrat:   🌍 Mumbai, India:
+            🌡️  30°C (86°F) — feels like 34°C
+            ☁️  Smoke
+            💧 Humidity: 43%
+            💨 Wind: 21 km/h WNW
+```
+
+If the generated plugin **crashes at runtime**, the error traceback is sent back to the LLM, which patches the code and reloads it automatically.
+
+### Web Dashboard (your control center)
+
+Start with `python main.py --web` and open `http://127.0.0.1:9000`:
+
+- **Live terminal** — type commands, get streamed responses, click autocomplete suggestions
+- **System gauges** — real-time CPU, RAM, disk, battery with animated arcs
+- **Plugin explorer** — browse all plugins, see every command, click to auto-fill
+- **Command history** — searchable log of everything you've run
+- **Workflow builder** — create and trigger multi-step automations
+- **Confirmation alerts** — destructive actions trigger a WebSocket popup for approval
+
+Tunnel it with ngrok and you have a **remote AI assistant for your PC** accessible from any device.
 
 ---
 
-## 💡 Usage Examples
+## 🔒 Safety
 
-### Generate a plugin from your phone
+Nothing runs unless validated. Three layers of defense:
 
-You're on the bus. You need a batch-rename tool for tonight. Pull out your phone, hit the ngrok URL:
+| Layer | Scope | What it does |
+|-------|-------|-------------|
+| **AST Sandbox** | Generated plugins | Parses code before execution. Blocks `eval`, `exec`, `ctypes`, `winreg`, `os.system`, `subprocess.Popen`, `shutil.rmtree`. Verifies proper `NexusPlugin` structure. |
+| **Network Permissions** | Generated plugins | Scans every URL/domain in code. Unapproved domains trigger Allow Once / Allow Always / Block prompt. No silent network access. |
+| **Destructive Action Gate** | All plugins | `shutdown`, `restart`, `kill`, `delete` require explicit approval. Alert pushed to all clients (web, Telegram, VS Code). |
 
-```
-build plugin that batch renames all files in a given folder by adding a prefix and timestamp
-```
-
-By the time you reach your desk, the plugin is generated, validated, and loaded.
-
-### Build plugins that hit external APIs
-
-```
-build plugin that fetches current weather for a given city and returns temperature humidity and description
-```
-
-The system generates the plugin, detects `wttr.in` in the code, and pauses for permission. You approve, and:
-
-```json
-{
-  "success": true,
-  "result": "🌍 Weather in Ballard Estate, India:\n  🌡️  30°C (86°F) — feels like 34°C\n  ☁️  Smoke\n  💧 Humidity: 43%\n  💨 Wind: 21 km/h WNW"
-}
-```
-
-### Scaffold an entire project remotely
-
-```
-workflow generate create a python project folder called myAutoProject with an init file, a main.py that prints hello world, and a requirements.txt
-```
-
-### Headless web scraping
-
-```
-react plan Go to codeforces.com/contests, find the most recent Div 2 contest, extract the contest name and id
-```
-
-The `cometWebAgent` launches headless Playwright, navigates, extracts data, and returns structured results.
-
-### Chain complex automations
-
-```
-workflow generate extract the top trending repo from github.com/trending, then create a folder called trendingProject and write a README.md with the repo name and description
-```
+> Think of it like Android permissions, but for your desktop AI.
 
 ---
 
-## 🏗 Architecture
-
-### How Dynamic Permissions Work
-
-```
-User → "build plugin that fetches crypto prices from coinbase API"
-         │
-         ▼
-  ┌─────────────────┐
-  │  LLM generates   │
-  │  plugin code      │
-  └────────┬─────────┘
-           │
-           ▼
-  ┌─────────────────┐
-  │  AST Validator    │  → syntax check
-  │                   │  → safety scan (blocked patterns)
-  │                   │  → structure verify (NexusPlugin subclass)
-  └────────┬─────────┘
-           │
-           ▼
-  ┌─────────────────────┐
-  │  Network URL Scanner  │  → detects "api.coinbase.com"
-  │                       │  → not in allowlist!
-  └────────┬─────────────┘
-           │
-           ▼
-  ┌────────────────────────────────────────┐
-  │  ⚠️  SECURITY PROMPT                    │
-  │  Plugin wants access to api.coinbase.com│
-  │                                         │
-  │  [1] Allow Once                         │
-  │  [2] Allow Always  (persist to YAML)    │
-  │  [3] Block & Delete                     │
-  └────────┬───────────────────────────────┘
-           │ (user picks 2)
-           ▼
-  ┌─────────────────┐
-  │  Hot-load into    │  → importlib dynamic import
-  │  live engine      │  → register commands
-  └─────────────────┘
-           │
-           ▼
-      ✅ Plugin ready
-```
+## 🏗 Under The Hood
 
 ### Folder Structure
 
@@ -313,26 +300,25 @@ User → "build plugin that fetches crypto prices from coinbase API"
 Autocrat/
 ├── main.py                     # Entry point (CLI + web server)
 ├── nexus_config.yaml           # Master configuration
-├── requirements.txt            # Python dependencies
-├── pyproject.toml              # Packaging config
+├── requirements.txt            # Dependencies
 │
 ├── nexus/
 │   ├── core/
-│   │   ├── engine.py           # Central command router + parallel executor
+│   │   ├── engine.py           # Command router + parallel executor
 │   │   ├── ai_engine.py        # LLM integration (native tools + streaming)
 │   │   ├── brain.py            # ML intent classifier (sentence-transformers)
 │   │   ├── parser.py           # Regex command parser (200+ patterns)
 │   │   ├── config.py           # YAML config manager
-│   │   ├── events.py           # Event bus for plugin communication
+│   │   ├── events.py           # Event bus for cross-plugin communication
 │   │   ├── learner.py          # Behavioral learning (time, chain, frequency)
 │   │   ├── logger.py           # Structured logging
 │   │   └── plugin.py           # Base plugin class
 │   │
 │   ├── plugins/
 │   │   ├── core_builder.py     # Meta-plugin: generates other plugins
-│   │   ├── comet_web_agent.py  # Headless browser automation (Playwright)
+│   │   ├── comet_web_agent.py  # Headless browser (Playwright + ReAct)
 │   │   ├── workflow_engine.py  # Multi-step workflow orchestration
-│   │   ├── generated/          # Auto-generated plugins live here
+│   │   ├── generated/          # Auto-generated plugins land here
 │   │   └── ...                 # 14 more built-in plugins
 │   │
 │   ├── integrations/
@@ -340,26 +326,22 @@ Autocrat/
 │   │
 │   └── web/
 │       ├── server.py           # FastAPI + SSE streaming + WebSocket
-│       └── static/             # Web dashboard (HTML/CSS/JS)
+│       └── static/             # Web dashboard (HTML / CSS / JS)
 │
 ├── workflows/                  # Saved workflow YAML files
 ├── logs/                       # Runtime logs
-└── screenshots/                # Screen captures
+└── screenshots/                # Captured screens
 ```
 
----
-
-## ⚙️ Configuration
-
-All settings live in `nexus_config.yaml`:
+### Configuration
 
 ```yaml
 ai:
   llm_backend: local_ollama
   local_model: qwen2.5-coder:3b
   local_base_url: http://127.0.0.1:11434
-  use_native_tools: true # native Ollama tool calling
-  strict_json_mode: true # fallback JSON mode
+  use_native_tools: true          # native Ollama tool calling
+  strict_json_mode: true          # JSON fallback for older models
 
 system:
   safe_mode: false
@@ -374,43 +356,53 @@ safety:
       - localhost
 ```
 
-Domains are added automatically when you choose **"Allow Always"** through the dynamic permission prompt — no manual YAML editing needed.
+Domains get added automatically when you approve "Allow Always" through the security prompt.
+
+### Requirements
+
+| What | Why |
+|------|-----|
+| Python 3.10+ | Modern syntax, type hints |
+| [Ollama](https://ollama.com/) | Local LLM (qwen2.5-coder:3b) |
+| Windows 10/11 | Win32 system automation APIs |
+| ~2GB RAM | Sentence-transformer + Ollama overhead |
+
+Key packages: `fastapi` · `uvicorn` · `httpx` · `sentence-transformers` · `playwright` · `psutil` · `pyautogui` · `pycaw` · `google-generativeai` (optional)
+
+### Why not LangChain?
+
+- **+50MB deps** for stuff Autocrat already does natively
+- **Opaque wrappers** — a tool call fails 4 layers deep, good luck debugging
+- **Ollama already has a tool-calling API** — wrapping it again adds latency, not features
+
+We built the four things that actually matter (native tools, smart filtering, parallel exec, streaming) in ~500 lines. Zero new dependencies.
 
 ---
 
-## 📊 Requirements
+## 🗺 Roadmap
 
-| Dependency                    | Why                                         |
-| ----------------------------- | ------------------------------------------- |
-| Python 3.10+                  | f-strings, match statements, type hints     |
-| [Ollama](https://ollama.com/) | Local LLM inference (qwen2.5-coder:3b)      |
-| Windows 10/11                 | Win32 APIs for system automation            |
-| ~2GB RAM                      | For the sentence-transformer + Ollama model |
-
-Key Python packages: `fastapi`, `uvicorn`, `httpx`, `sentence-transformers`, `playwright`, `psutil`, `pyautogui`, `pycaw`, `google-generativeai` (optional Gemini cloud backend).
+- [x] Native LLM tool calling (Ollama `/api/chat`)
+- [x] Smart context window (keyword-relevance filtering)
+- [x] Parallel multi-step execution
+- [x] Streaming responses (SSE)
+- [x] Auto-healing generated plugins
+- [x] Dynamic network permissions
+- [ ] 🎤 Voice control (faster-whisper — "Hey Autocrat, lock my PC")
+- [ ] 🐧 Linux / macOS support (replace Win32 APIs)
+- [ ] 🏪 Plugin marketplace (share generated plugins with others)
+- [ ] 🤖 Multi-agent mode (agents that spawn sub-agents)
+- [ ] 💻 VS Code extension (run commands inline)
+- [ ] 🧠 Persistent memory (remember preferences across sessions)
 
 ---
 
 ## 🤝 Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on adding plugins, parser patterns, and submitting PRs.
-
-## 🗺 Roadmap
-
-- [x] Native LLM tool calling (Ollama `/api/chat`)
-- [x] Smart context window filtering
-- [x] Parallel multi-step execution
-- [x] Streaming responses (SSE)
-- [ ] Linux / macOS support (replace Win32 APIs)
-- [ ] Voice control via faster-whisper
-- [ ] Plugin marketplace (share generated plugins)
-- [ ] Multi-agent orchestration (agents spawning sub-agents)
-- [ ] VS Code extension for inline command execution
-- [ ] Persistent memory / context across sessions
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## 📄 License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT — See [LICENSE](LICENSE).
 
 ---
 
@@ -419,5 +411,7 @@ MIT License. See [LICENSE](LICENSE) for details.
 **Built by [@Autocrat2005](https://github.com/Autocrat2005)**
 
 If this project is useful, consider giving it a ⭐
+
+*"Sir, I've prepared a flight plan..."* — Well, not yet. But we're getting there.
 
 </div>
