@@ -15,7 +15,7 @@ import yaml
 from typing import Any, Dict, List, Optional, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException, Query, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from nexus.core.engine import NexusEngine
@@ -307,6 +307,28 @@ async def execute_command(req: CommandRequest, authorization: Optional[str] = He
         })
 
     return result
+
+
+@app.get("/api/stream/chat")
+async def stream_chat(q: str = "", authorization: Optional[str] = Header(None)):
+    """Stream a conversational LLM response token-by-token (PROTECTED).
+
+    Used by the web UI for real-time text rendering instead of waiting
+    for the full response. Returns text/event-stream (SSE).
+    """
+    verify_token(authorization)
+    if not engine:
+        return {"success": False, "error": "Engine not initialized"}
+    if not q.strip():
+        return {"success": False, "error": "Empty query"}
+
+    def generate():
+        for token in engine.gemini.stream_chat(q):
+            # SSE format
+            yield f"data: {json.dumps({'token': token})}\n\n"
+        yield "data: {\"done\": true}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.get("/api/confirmations")

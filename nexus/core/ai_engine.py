@@ -175,9 +175,13 @@ class LearningMemory:
 
 class GeminiEngine:
     """
-    Connects to Google Gemini (free tier) for dynamic command understanding.
+    Connects to Google Gemini (free tier) or local Ollama for dynamic command understanding.
     When the local classifiers can't figure out what the user wants, this
-    engine asks Gemini to map natural language → available actions.
+    engine asks the LLM to map natural language → available actions.
+    
+    Supports two modes for Ollama:
+      - Native tool calling via /api/chat (preferred, faster, no JSON repair needed)
+      - Strict JSON prompt engineering (fallback for older models)
     
     If no API key is configured, falls back to enhanced local heuristics.
     """
@@ -192,6 +196,7 @@ class GeminiEngine:
         gemini_enabled: bool = False,
         strict_json_mode: bool = True,
         local_retry_count: int = 2,
+        use_native_tools: bool = True,
     ):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.model = None
@@ -204,6 +209,8 @@ class GeminiEngine:
         self.gemini_enabled = bool(gemini_enabled)
         self.strict_json_mode = bool(strict_json_mode)
         self.local_retry_count = max(0, int(local_retry_count or 0))
+        self.use_native_tools = bool(use_native_tools)
+        self._supports_native_tools: Optional[bool] = None  # auto-detected
         self._init_backend()
 
     def _init_backend(self):
@@ -261,16 +268,339 @@ class GeminiEngine:
         except Exception:
             return False
 
+    # ──────────────────────────────────────────────────────────────────
+    # Smart Context Window — send only relevant commands to the LLM
+    # ──────────────────────────────────────────────────────────────────
+
+    def _filter_relevant_commands(self, user_text: str, max_commands: int = 30) -> List[Dict]:
+        """Pre-filter commands by keyword relevance to reduce prompt token count.
+
+        Instead of sending all 160+ commands, we score each command against the
+        user's text using word overlap + synonym expansion, then return only the
+        top-N most relevant ones plus a small set of high-utility defaults.
+        """
+        if not self.available_commands:
+            return []
+
+        user_words = set(re.sub(r"[^\w\s]", "", user_text.lower()).split())
+        if not user_words:
+            return self.available_commands[:max_commands]
+
+        # Synonym expansion for common user intents
+        _synonyms = {
+            "open": {"launch", "start", "run", "open"},
+            "close": {"close", "kill", "terminate", "stop", "end", "quit"},
+            "find": {"find", "search", "locate", "look", "where"},
+            "delete": {"delete", "remove", "erase", "trash", "rm"},
+            "copy": {"copy", "duplicate", "clipboard"},
+            "move": {"move", "rename", "mv"},
+            "write": {"write", "create", "save", "make", "new"},
+            "read": {"read", "show", "display", "cat", "get", "view"},
+            "list": {"list", "ls", "dir", "show", "all"},
+            "volume": {"volume", "sound", "audio", "mute", "unmute", "loud", "quiet"},
+            "window": {"window", "tab", "focus", "minimize", "maximize", "snap", "resize"},
+            "web": {"web", "browser", "navigate", "url", "site", "http", "scrape", "react"},
+            "build": {"build", "generate", "create", "plugin", "make"},
+            "workflow": {"workflow", "chain", "multi", "step", "automate", "sequence"},
+            "system": {"system", "cpu", "ram", "disk", "memory", "battery", "info"},
+            "power": {"power", "shutdown", "restart", "sleep", "hibernate", "lock"},
+            "screenshot": {"screenshot", "screen", "capture", "ocr"},
+            "type": {"type", "keyboard", "key", "hotkey", "press", "shortcut"},
+            "schedule": {"schedule", "cron", "timer", "every", "recurring"},
+        }
+
+        expanded_words = set(user_words)
+        for word in user_words:
+            for _key, synonyms in _synonyms.items():
+                if word in synonyms:
+                    expanded_words |= synonyms
+
+        scored = []
+        for cmd in self.available_commands:
+            cmd_text = " ".join([
+                cmd.get("name", "").replace("_", " "),
+                cmd.get("description", ""),
+                cmd.get("usage", ""),
+                cmd.get("plugin", ""),
+            ]).lower()
+            cmd_words = set(re.sub(r"[^\w\s]", "", cmd_text).split())
+
+            if not cmd_words:
+                continue
+
+            overlap = len(expanded_words & cmd_words)
+            # Boost exact plugin name matches
+            plugin_name = cmd.get("plugin", "").lower().replace("_", "")
+            for uw in user_words:
+                if uw in plugin_name or plugin_name.startswith(uw):
+                    overlap += 3
+
+            scored.append((overlap, cmd))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [cmd for score, cmd in scored[:max_commands] if score > 0]
+
+        # Always include a few high-utility defaults even if not keyword-matched
+        default_plugins = {"smart_actions", "app_launcher", "file_ops", "shell_executor"}
+        default_cmds = [c for c in self.available_commands
+                        if c.get("plugin") in default_plugins
+                        and c not in top][:5]
+
+        result = top + default_cmds
+        if not result:
+            # Fallback: return top commands alphabetically
+            return self.available_commands[:max_commands]
+        return result
+
+    # ──────────────────────────────────────────────────────────────────
+    # Native Ollama Tool Calling via /api/chat
+    # ──────────────────────────────────────────────────────────────────
+
+    def _build_ollama_tools(self, commands: List[Dict] = None) -> List[Dict]:
+        """Convert available commands into Ollama /api/chat tool definitions.
+
+        Each plugin.command becomes a tool with:
+          - name: "plugin__command" (double underscore separator)
+          - description: from plugin command description
+          - parameters: {"query": {"type": "string"}} (generic)
+        """
+        cmds = commands or self.available_commands
+        tools = []
+        for cmd in cmds:
+            plugin = cmd.get("plugin", "unknown")
+            name = cmd.get("name", "unknown")
+            desc = cmd.get("description", "")
+            usage = cmd.get("usage", "")
+            tool_name = f"{plugin}__{name}"
+
+            # Build parameter schema from usage pattern
+            properties = {}
+            required = []
+
+            # Common parameter extraction from usage strings
+            if usage:
+                usage_lower = usage.lower()
+                if "<url>" in usage_lower or "<query>" in usage_lower or "<path>" in usage_lower:
+                    properties["query"] = {
+                        "type": "string",
+                        "description": "The main argument (URL, search query, file path, etc.)"
+                    }
+                    required.append("query")
+                if "<target>" in usage_lower or "<title>" in usage_lower:
+                    properties["target"] = {
+                        "type": "string",
+                        "description": "Target identifier (window title, process name, etc.)"
+                    }
+                if "<src>" in usage_lower:
+                    properties["src"] = {"type": "string", "description": "Source path"}
+                if "<dst>" in usage_lower or "<dest>" in usage_lower:
+                    properties["dst"] = {"type": "string", "description": "Destination path"}
+
+            # Default: every tool accepts at least a generic "query" param
+            if not properties:
+                properties["query"] = {
+                    "type": "string",
+                    "description": "The main argument for this command"
+                }
+
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": f"[{plugin}] {desc}" + (f" (usage: {usage})" if usage else ""),
+                    "parameters": {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required,
+                    },
+                },
+            })
+        return tools
+
+    def _ollama_chat_with_tools(self, user_text: str, commands: List[Dict] = None) -> Optional[Dict]:
+        """Call Ollama /api/chat with native tool definitions.
+
+        Returns parsed action dict on tool_call, conversational response otherwise.
+        This is significantly faster than JSON prompt engineering because:
+        1. The model natively understands tool schemas (no prompt parsing needed)
+        2. No JSON repair loop — the output is structured by the model itself
+        3. Smaller prompt size (tool definitions are compact)
+        """
+        tools = self._build_ollama_tools(commands)
+        payload = {
+            "model": self.local_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are the AI brain of Autocrat, a Windows PC automation system. "
+                        "The user gives natural language commands. Use the provided tools to "
+                        "perform actions. If no tool fits, respond conversationally. "
+                        "For multi-step tasks, you may call multiple tools."
+                    ),
+                },
+                {"role": "user", "content": user_text},
+            ],
+            "tools": tools,
+            "stream": False,
+            "options": {"temperature": 0.05, "num_predict": 500},
+        }
+
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                response = client.post(f"{self.local_base_url}/api/chat", json=payload)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            log.warning(f"Ollama /api/chat failed: {e}")
+            return None
+
+        message = data.get("message", {})
+        tool_calls = message.get("tool_calls", [])
+
+        if tool_calls:
+            valid_actions = {f"{c['plugin']}.{c['name']}" for c in self.available_commands}
+            steps = []
+
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                tool_name = fn.get("name", "")
+                tool_args = fn.get("arguments", {})
+
+                # Convert "plugin__command" back to "plugin.command"
+                action = tool_name.replace("__", ".", 1)
+                action, params = self._normalize_action(action, tool_args)
+
+                if action in valid_actions:
+                    steps.append({"action": action, "params": params})
+                else:
+                    log.warning(f"Native tool call returned invalid action: {action}")
+
+            if steps:
+                log.info(f"🔧 Native tool call: {[s['action'] for s in steps]}")
+                result = {
+                    "action": steps[0]["action"],
+                    "params": steps[0]["params"],
+                    "confidence": 0.90,
+                    "source": "native_tool_call",
+                }
+                if len(steps) > 1:
+                    result["multi_step"] = steps
+                return result
+
+        # No tool call — it's a conversational response
+        content = message.get("content", "").strip()
+        if content:
+            return {
+                "action": "__conversation__",
+                "response": content,
+                "confidence": 0.80,
+                "source": "native_tool_call",
+            }
+
+        return None
+
+    def _detect_native_tool_support(self) -> bool:
+        """Probe whether the loaded Ollama model supports native tool calling.
+
+        We send a minimal /api/chat request with a single tool definition.
+        If the model responds with a tool_call, it supports native tools.
+        If it responds with plain text or errors, it doesn't.
+        """
+        test_tools = [{
+            "type": "function",
+            "function": {
+                "name": "test__ping",
+                "description": "Test function",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"msg": {"type": "string", "description": "message"}},
+                    "required": [],
+                },
+            },
+        }]
+        try:
+            payload = {
+                "model": self.local_model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "tools": test_tools,
+                "stream": False,
+                "options": {"temperature": 0.0, "num_predict": 50},
+            }
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(f"{self.local_base_url}/api/chat", json=payload)
+            if response.status_code != 200:
+                return False
+            data = response.json()
+            # Model supports tools if it returns a message with tool_calls field
+            msg = data.get("message", {})
+            return "tool_calls" in msg or isinstance(msg.get("tool_calls"), list)
+        except Exception:
+            return False
+
+    # ──────────────────────────────────────────────────────────────────
+    # Streaming support for real-time token output
+    # ──────────────────────────────────────────────────────────────────
+
+    def stream_chat(self, text: str):
+        """Generator that yields tokens from the LLM in real-time.
+
+        Used by the web UI to show streaming responses instead of
+        waiting for the full output. Only for conversational responses.
+        """
+        if not self._ready or self.llm_backend != "local_ollama":
+            yield "No active LLM backend."
+            return
+
+        payload = {
+            "model": self.local_model,
+            "messages": [{"role": "user", "content": text}],
+            "stream": True,
+            "options": {"temperature": 0.7, "num_predict": 1000},
+        }
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                with client.stream("POST", f"{self.local_base_url}/api/chat", json=payload) as response:
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        try:
+                            chunk = json.loads(line)
+                            token = chunk.get("message", {}).get("content", "")
+                            if token:
+                                yield token
+                            if chunk.get("done"):
+                                break
+                        except json.JSONDecodeError:
+                            continue
+        except Exception as e:
+            yield f"\n[Stream error: {e}]"
+
     def update_commands(self, commands: List[Dict]):
         """Update the list of available commands (called after plugins load)."""
         self.available_commands = commands
         self._command_summary = self._build_command_summary()
 
-    def _build_command_summary(self) -> str:
-        """Build a concise summary of all available plugin commands."""
+        # Auto-detect native tool support on first command update
+        if (self.use_native_tools
+                and self._supports_native_tools is None
+                and self._ready
+                and self.llm_backend == "local_ollama"):
+            self._supports_native_tools = self._detect_native_tool_support()
+            if self._supports_native_tools:
+                log.info("🔧 Native tool calling detected — using /api/chat with tools (faster, no JSON repair)")
+            else:
+                log.info("📝 Model does not support native tools — using strict JSON prompt mode")
+
+    def _build_command_summary(self, commands: List[Dict] = None) -> str:
+        """Build a concise summary of all available plugin commands.
+
+        When `commands` is provided, summarizes only those commands (smart context).
+        """
+        cmds = commands or self.available_commands
         lines = []
         by_plugin = {}
-        for cmd in self.available_commands:
+        for cmd in cmds:
             plugin = cmd.get("plugin", "unknown")
             by_plugin.setdefault(plugin, []).append(cmd)
 
@@ -314,12 +644,21 @@ The user gives natural language commands. Your job is to decide what action to t
 
 Respond ONLY with the JSON or plain text answer — nothing else."""
 
-    def _make_local_strict_json_prompt(self, user_text: str) -> str:
-        """Very strict JSON prompt for local tool-calling models."""
+    def _make_local_strict_json_prompt(self, user_text: str, commands: List[Dict] = None) -> str:
+        """Very strict JSON prompt for local tool-calling models.
+
+        When `commands` is provided, uses only those commands instead of the
+        full summary (smart context window).
+        """
+        if commands:
+            summary = self._build_command_summary(commands)
+        else:
+            summary = self._command_summary
+
         return f"""You are NEXUS OS tool router.
 
 AVAILABLE ACTIONS:
-{self._command_summary}
+{summary}
 
 MANDATORY OUTPUT RULES:
 1) Output ONLY valid JSON. No markdown. No backticks. No prose.
@@ -406,10 +745,38 @@ No markdown. No explanation. JSON only.
         return self._enhanced_local(text)
 
     def _ask_local_llm(self, text: str) -> Optional[Dict]:
-        """Ask local Ollama model to interpret the command."""
+        """Ask local Ollama model to interpret the command.
+
+        Uses native tool calling when supported (faster, no repair loop needed).
+        Falls back to strict JSON prompt engineering for older models.
+        """
+        # ── Try native tool calling first (much faster path) ──
+        if self.use_native_tools and self._supports_native_tools:
+            try:
+                # Smart context: filter to relevant commands only
+                relevant = self._filter_relevant_commands(text, max_commands=25)
+                log.info(f"📋 Smart context: {len(relevant)}/{len(self.available_commands)} commands for LLM")
+
+                result = self._ollama_chat_with_tools(text, commands=relevant)
+                if result:
+                    action = result.get("action", "")
+                    if action and action != "__conversation__":
+                        self.memory.remember(text, action, result.get("params", {}), 0.90)
+                        self.memory.log_conversation(text, f"tool_call:{action}", was_action=True, action=action)
+                    elif action == "__conversation__":
+                        self.memory.log_conversation(text, result.get("response", ""), was_action=False)
+                    return result
+            except Exception as e:
+                log.warning(f"Native tool calling failed, falling back to JSON mode: {e}")
+
+        # ── Fallback: strict JSON prompt engineering ──
         try:
+            # Smart context: build a filtered command summary
+            relevant = self._filter_relevant_commands(text, max_commands=30)
+            log.info(f"📋 Smart context: {len(relevant)}/{len(self.available_commands)} commands for LLM")
+
             if self.strict_json_mode:
-                prompt = self._make_local_strict_json_prompt(text)
+                prompt = self._make_local_strict_json_prompt(text, commands=relevant)
             else:
                 prompt = f"{self._make_system_prompt()}\n\nUser command: {text}"
 
@@ -719,5 +1086,8 @@ No markdown. No explanation. JSON only.
             "llm_backend": self.llm_backend,
             "llm_active": self._ready,
             "model": self.local_model if self.llm_backend == "local_ollama" else ("gemini-2.0-flash" if self._ready else "none"),
+            "native_tool_calling": bool(self.use_native_tools and self._supports_native_tools),
+            "streaming_enabled": True,
+            "smart_context_window": True,
             **memory_stats,
         }

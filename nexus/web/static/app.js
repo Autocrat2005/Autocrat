@@ -225,12 +225,84 @@
             });
 
             const data = await res.json();
-            displayResult(data);
+
+            // If it was a conversational AI response, re-stream it for
+            // a nice token-by-token effect (the full text is our fallback)
+            if (data.success && data.ai_source) {
+                await streamConversation(text, data);
+            } else {
+                displayResult(data);
+            }
         } catch (err) {
             appendTerminal("error", `Connection error: ${err.message}`);
         }
 
         termContainer.classList.remove("executing");
+    }
+
+    /**
+     * Stream a conversational AI response token-by-token via SSE.
+     * Falls back to displaying the pre-fetched full result on error.
+     */
+    async function streamConversation(text, fallbackData) {
+        const div = document.createElement("div");
+        div.className = "output-line result streaming";
+        const pre = document.createElement("pre");
+        pre.textContent = "";
+        div.appendChild(pre);
+        terminalOutput.appendChild(div);
+        terminalOutput.scrollTop = terminalOutput.scrollHeight;
+
+        try {
+            const streamHeaders = {};
+            if (authToken) streamHeaders["Authorization"] = `Bearer ${authToken}`;
+
+            const res = await fetch(
+                `${API}/api/stream/chat?q=${encodeURIComponent(text)}`,
+                { headers: streamHeaders }
+            );
+
+            if (!res.ok || !res.body) throw new Error("Stream unavailable");
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                // Parse SSE lines
+                const lines = buffer.split("\n");
+                buffer = lines.pop(); // keep incomplete line in buffer
+                for (const line of lines) {
+                    if (!line.startsWith("data: ")) continue;
+                    try {
+                        const payload = JSON.parse(line.slice(6));
+                        if (payload.token) {
+                            pre.textContent += payload.token;
+                            terminalOutput.scrollTop = terminalOutput.scrollHeight;
+                        }
+                    } catch (_) { /* ignore malformed chunks */ }
+                }
+            }
+
+            // If streaming produced no text, fall back
+            if (!pre.textContent.trim()) {
+                pre.textContent = fallbackData.result || "";
+            }
+
+            div.classList.remove("streaming");
+
+            if (fallbackData.duration_ms !== undefined) {
+                appendTerminal("meta", `⏱ ${fallbackData.duration_ms}ms (streamed)`);
+            }
+        } catch (_) {
+            // Streaming failed — show the already-fetched full response
+            pre.textContent = fallbackData.result || "";
+            div.classList.remove("streaming");
+        }
     }
 
     function displayResult(data) {

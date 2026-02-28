@@ -9,6 +9,7 @@ import time
 import threading
 import re
 import secrets
+import concurrent.futures
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from nexus.core.logger import get_logger
@@ -48,6 +49,7 @@ class NexusEngine:
         gemini_enabled = bool(self.config.get("ai", "gemini_enabled"))
         strict_json_mode = bool(self.config.get("ai", "strict_json_mode", True))
         local_retry_count = int(self.config.get("ai", "local_retry_count", 2) or 0)
+        use_native_tools = bool(self.config.get("ai", "use_native_tools", True))
         self.gemini = GeminiEngine(
             api_key=gemini_key,
             llm_backend=llm_backend,
@@ -56,6 +58,7 @@ class NexusEngine:
             gemini_enabled=gemini_enabled,
             strict_json_mode=strict_json_mode,
             local_retry_count=local_retry_count,
+            use_native_tools=use_native_tools,
         )
 
         # Load brain model in background thread (takes a few seconds)
@@ -283,17 +286,42 @@ class NexusEngine:
                 "duration_ms": round((time.time() - start) * 1000, 2),
             }
 
-        # Execute each parsed command (supports chaining)
+        # Execute parsed commands (supports parallel execution for independent steps)
         results = []
         overall_success = True
 
-        for parsed in parsed_commands:
-            if parsed.plugin == "_meta":
-                r = self._handle_meta(parsed)
-            else:
-                r = self._execute_plugin_command(parsed)
+        # Determine if steps can run in parallel (different plugins = independent)
+        can_parallelize = (
+            len(parsed_commands) > 1
+            and len({p.plugin for p in parsed_commands}) == len(parsed_commands)
+            and all(p.plugin != "_meta" for p in parsed_commands)
+        )
 
-            results.append(r)
+        if can_parallelize:
+            log.info(f"⚡ Running {len(parsed_commands)} independent steps in parallel")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(parsed_commands), 4)) as pool:
+                future_map = {
+                    pool.submit(self._execute_plugin_command, parsed): i
+                    for i, parsed in enumerate(parsed_commands)
+                }
+                indexed_results = [None] * len(parsed_commands)
+                for future in concurrent.futures.as_completed(future_map):
+                    idx = future_map[future]
+                    try:
+                        r = future.result()
+                    except Exception as e:
+                        r = {"success": False, "error": str(e)}
+                    indexed_results[idx] = r
+                results = indexed_results
+        else:
+            for parsed in parsed_commands:
+                if parsed.plugin == "_meta":
+                    r = self._handle_meta(parsed)
+                else:
+                    r = self._execute_plugin_command(parsed)
+                results.append(r)
+
+        for r in results:
             if not r.get("success", False):
                 overall_success = False
 

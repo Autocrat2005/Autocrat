@@ -481,6 +481,16 @@ body {
     font-size: 12px;
 }
 
+/* Streaming cursor blink while tokens arrive */
+.output-line.streaming pre::after {
+    content: "▋";
+    animation: blink-cursor 0.6s step-end infinite;
+    color: var(--accent-primary);
+}
+@keyframes blink-cursor {
+    50% { opacity: 0; }
+}
+
 .output-line .screenshot-preview {
     max-width: 300px;
     border-radius: 8px;

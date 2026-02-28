@@ -39,6 +39,7 @@ ai:
   local_base_url: http://127.0.0.1:11434
   strict_json_mode: true
   local_retry_count: 2
+  use_native_tools: true
 system:
   safe_mode: false
   safe_mode_allow_actions:
