@@ -19,7 +19,7 @@ An AI-powered desktop automation OS that understands natural language, writes it
 
 <br>
 
-[Quick Start](#-quick-start) · [Features](#-features) · [Usage](#-usage-examples) · [Architecture](#-architecture) · [Config](#%EF%B8%8F-configuration) · [Contributing](#-contributing)
+[Quick Start](#-quick-start) · [What's New](#-whats-new-in-v20) · [Features](#-features) · [Usage](#-usage-examples) · [Architecture](#-architecture) · [Config](#%EF%B8%8F-configuration)
 
 </div>
 
@@ -32,6 +32,30 @@ Most automation tools make you learn their scripting language. Autocrat flips th
 It's not just a command runner. It's a self-extending system: if a capability doesn't exist yet, the local LLM generates a validated plugin on the fly, loads it without restarting, and if the new code tries to hit an unapproved domain, the system pauses and asks you — like Android asking for camera permissions.
 
 > **TL;DR** — Tell your computer what to do. It does it. If it can't, it builds the tool first.
+
+---
+
+## 🔥 What's New in v2.0
+
+> The v2.0 update replaces the old prompt-engineering approach with proper agentic capabilities. Here's what's actually different:
+
+| | Before (v1.0) | After (v2.0) |
+|---|---|---|
+| **LLM ↔ Actions** | All 160+ commands stuffed into a text prompt. LLM returns hand-crafted JSON. If the JSON is malformed → repair loop → retry → hope it works. | **Native tool calling** via Ollama's `/api/chat`. Commands registered as structured function definitions. Model picks the right tool + params directly. No JSON hacking. |
+| **Context sent to LLM** | Entire command catalog dumped every time (160+ entries, ~4K tokens wasted). Small models choke on the noise. | **Smart context window** — keyword scoring with synonym expansion. Only the top ~30 relevant commands reach the LLM. 80% fewer tokens, better accuracy. |
+| **Multi-step execution** | Steps run one after another, sequentially. "minimize all windows, mute volume, take a screenshot" = 3 round-trips in series. | **Parallel execution** — independent steps fire concurrently via a thread pool. Same 3 actions finish in the time of the slowest one. |
+| **Web UI responses** | Spinner → blank screen → full text blob appears all at once. | **Streaming** — tokens arrive one-by-one via SSE. Blinking cursor. You read while the model thinks. |
+| **Model compatibility** | Hard-coded for one prompting style. Switch models = rewrite prompts. | **Auto-detection** — probes the model on startup, enables native tools if supported, falls back to JSON mode gracefully. |
+
+### Why not LangChain?
+
+We evaluated LangChain and decided against it. Here's why:
+
+- **+50MB of dependencies** for functionality Autocrat already has natively (tool routing, output parsing, retry logic)
+- **Opaque abstractions** — when a tool call fails inside 4 layers of LangChain wrappers, good luck debugging it
+- **Ollama already exposes a tool-calling API** — wrapping a wrapper around a wrapper adds latency, not capability
+
+Instead, we implemented the four specific things that actually matter — native tool calling, smart filtering, parallel execution, and streaming — in ~500 lines of focused Python. No new dependencies.
 
 ---
 
@@ -83,25 +107,39 @@ If the generated code tries to reach an external API, the system pauses:
 
 No unauthorized network calls. Ever.
 
-### Native Tool Calling
+### Agentic LLM Engine
 
-Instead of wrestling with prompt-engineered JSON, Autocrat uses **Ollama's native `/api/chat` tool-calling protocol**. Each of the 160+ commands is registered as a structured tool definition — the model picks the right function and parameters directly.
+The core of v2.0. Four capabilities working together:
 
-Falls back to strict JSON prompting automatically if the model doesn't support tools.
+```
+User input: "close spotify and take a screenshot"
+     │
+     ▼
+ ┌────────────────────────────────────────────────────────────┐
+ │  Smart Context Window                                      │
+ │  160+ commands → keyword scoring → synonym expansion       │
+ │  → sends only ~30 relevant commands to the LLM            │
+ └────────────────────┬───────────────────────────────────────┘
+                      │
+                      ▼
+ ┌────────────────────────────────────────────────────────────┐
+ │  Native Tool Calling (Ollama /api/chat)                    │
+ │  Model sees structured function definitions, not raw text  │
+ │  → returns: tool_call(processController.kill, {name:       │
+ │     "spotify"}) + tool_call(screenIntel.screenshot, {})    │
+ └────────────────────┬───────────────────────────────────────┘
+                      │
+                      ▼
+ ┌────────────────────────────────────────────────────────────┐
+ │  Parallel Executor (ThreadPoolExecutor)                    │
+ │  Different plugins → fire concurrently                     │
+ │  processController.kill ──┐                                │
+ │  screenIntel.screenshot ──┤── both run at the same time    │
+ │                           └── return merged results        │
+ └────────────────────────────────────────────────────────────┘
+```
 
-### Smart Context Window
-
-With 160+ available commands, sending everything to the LLM wastes tokens and confuses smaller models. Autocrat's **keyword-relevance filter** scores commands against the user's input using synonym expansion, then sends only the top ~30 most relevant commands to the LLM.
-
-Result: faster responses, higher accuracy, lower token usage.
-
-### Parallel Execution
-
-Multi-step commands that target different plugins run **concurrently** via a thread pool. Independent actions like "minimize all windows, mute volume, and take a screenshot" execute in parallel instead of sequentially.
-
-### Streaming Responses
-
-Conversational AI answers stream **token-by-token** to the web dashboard via Server-Sent Events (SSE). You see the response forming in real-time with a blinking cursor — no more staring at a spinner waiting for the full reply.
+For conversational responses (no action needed), the answer **streams token-by-token** to the web UI via SSE — you read while the model thinks.
 
 ### 4-Stage AI Pipeline
 
@@ -113,6 +151,8 @@ Every command flows through four stages — the first one that matches wins:
 | 2     | ML Brain       | ~5ms  | Sentence-transformer embeddings (`all-MiniLM-L6-v2`) |
 | 3     | Local LLM      | ~1-3s | Ollama with native tool calling or structured JSON   |
 | 4     | Conversational | ~1-3s | General knowledge answers when no action matches     |
+
+Most commands hit Stage 1 or 2 and resolve in under 10ms. The LLM only fires when the fast layers can't figure it out.
 
 ### Remote Control
 
@@ -153,11 +193,22 @@ Start the web server, tunnel it with ngrok, and control your PC from any browser
 
 ### Safety Architecture
 
-- **Blocked imports**: `ctypes`, `winreg`, raw `socket`
-- **Blocked functions**: `eval`, `exec`, `os.system`, `subprocess.Popen`, `shutil.rmtree`
-- **Destructive action confirmation**: shutdown, restart, kill, delete all require explicit approval before execution
-- **Domain allowlist**: web navigation and API calls only to pre-approved domains
-- **Dynamic permission prompts**: generated plugins that reach out to new domains trigger an interactive allow/block prompt
+Nothing runs unless it's been validated. Three layers of defense:
+
+**Layer 1 — AST Sandbox** (generated plugins)
+- Blocked imports: `ctypes`, `winreg`, raw `socket`
+- Blocked calls: `eval()`, `exec()`, `os.system()`, `subprocess.Popen()`, `shutil.rmtree()`
+- Structure verification: must subclass `NexusPlugin`, must define `get_commands()`
+
+**Layer 2 — Network Permissions** (generated plugins)
+- Every URL in generated code is scanned against a domain allowlist
+- Unapproved domains trigger an interactive Allow Once / Allow Always / Block prompt
+- No silent network access — ever
+
+**Layer 3 — Destructive Action Confirmation** (all plugins)
+- `shutdown`, `restart`, `kill`, `delete`, `format` require explicit user approval
+- Prompts show the exact command and reasoning before execution
+- WebSocket alerts pushed to all connected clients (web, Telegram, VS Code)
 
 ---
 
