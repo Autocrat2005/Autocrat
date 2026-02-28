@@ -1479,3 +1479,127 @@ kbd {
     font-size: 11px;
     margin-top: 12px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   JARVIS HUD Styles — Arc Reactor, Boot Sequence, Narration
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Arc Reactor Logo Icon ───────────────────────────────────── */
+.arc-reactor {
+    font-size: 22px;
+    color: #22d3ee;
+    text-shadow:
+        0 0 8px rgba(34, 211, 238, 0.8),
+        0 0 20px rgba(34, 211, 238, 0.4),
+        0 0 40px rgba(34, 211, 238, 0.2);
+    animation: arc-pulse 2s ease-in-out infinite;
+}
+
+@keyframes arc-pulse {
+    0%, 100% {
+        text-shadow:
+            0 0 8px rgba(34, 211, 238, 0.8),
+            0 0 20px rgba(34, 211, 238, 0.4);
+        filter: brightness(1);
+    }
+    50% {
+        text-shadow:
+            0 0 12px rgba(34, 211, 238, 1),
+            0 0 30px rgba(34, 211, 238, 0.6),
+            0 0 50px rgba(34, 211, 238, 0.3);
+        filter: brightness(1.2);
+    }
+}
+
+/* ── Boot Sequence Animation ─────────────────────────────────── */
+.jarvis-boot .boot-text {
+    color: var(--accent-cyan);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    animation: boot-reveal 1.5s ease-out;
+    white-space: pre;
+}
+
+@keyframes boot-reveal {
+    0% {
+        opacity: 0;
+        clip-path: inset(0 0 100% 0);
+    }
+    30% {
+        opacity: 1;
+        clip-path: inset(0 0 70% 0);
+    }
+    100% {
+        opacity: 1;
+        clip-path: inset(0 0 0 0);
+    }
+}
+
+/* ── Narration Lines (JARVIS speech) ─────────────────────────── */
+.output-line.narration pre {
+    color: var(--accent-cyan);
+    font-style: italic;
+    border-left: 2px solid var(--accent-cyan);
+    padding-left: 12px;
+    margin: 4px 0;
+    opacity: 0.95;
+}
+
+.output-line.narration {
+    animation: narration-fade 0.4s ease-out;
+}
+
+@keyframes narration-fade {
+    from {
+        opacity: 0;
+        transform: translateX(-8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* ── Suggestions styling ─────────────────────────────────────── */
+.suggestion-tag {
+    display: inline-block;
+    padding: 2px 10px;
+    margin: 2px 4px;
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    border-radius: 12px;
+    color: var(--accent-cyan);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.suggestion-tag:hover {
+    background: rgba(34, 211, 238, 0.15);
+    border-color: rgba(34, 211, 238, 0.4);
+    box-shadow: 0 0 8px rgba(34, 211, 238, 0.2);
+}
+
+/* ── Prompt glow (arc reactor style) ─────────────────────────── */
+.prompt {
+    color: var(--accent-cyan) !important;
+    text-shadow: 0 0 6px rgba(34, 211, 238, 0.6);
+    font-size: 16px;
+}
+
+/* ── Terminal executing state ─────────────────────────────────── */
+.terminal-container.executing {
+    border-color: rgba(34, 211, 238, 0.3);
+    box-shadow: 0 0 20px rgba(34, 211, 238, 0.1);
+}
+
+.terminal-container.executing .terminal-header {
+    background: rgba(34, 211, 238, 0.05);
+}
+
+/* ── Meta output styling ─────────────────────────────────────── */
+.output-line.meta pre {
+    color: var(--text-muted);
+    font-size: 11px;
+}

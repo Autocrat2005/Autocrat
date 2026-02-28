@@ -175,9 +175,13 @@ class NexusEngine:
             text = self._last_command
         elif text_lower in ("what did i just do", "what was that", "last command"):
             if self._last_command:
-                return {"success": True, "result": f"Your last command was: '{self._last_command}'", "timestamp": timestamp, "duration_ms": 0}
+                return {"success": True, "result": f"Your last command was: '{self._last_command}'",
+                        "narration": f"That was '{self._last_command}', sir.",
+                        "timestamp": timestamp, "duration_ms": 0}
             else:
-                return {"success": True, "result": "No previous commands in this session.", "timestamp": timestamp, "duration_ms": 0}
+                return {"success": True, "result": "No previous commands in this session.",
+                        "narration": "Nothing yet — this session just started.",
+                        "timestamp": timestamp, "duration_ms": 0}
 
         # ── Stage 0: Pronoun / context resolution ──
         text = self._resolve_context(text)
@@ -376,6 +380,28 @@ class NexusEngine:
                 "intent": intent_match["intent"],
                 "confidence": intent_match["confidence"],
             }
+
+        # ── JARVIS narration layer ──
+        if final.get("success"):
+            action_name = intent_match["action"] if intent_match else ""
+            target = ""
+            # Extract target from parsed args for narration
+            if parsed_commands:
+                args = parsed_commands[0].args or {}
+                for k in ("app_name", "query", "target", "title", "path"):
+                    if k in args and args[k]:
+                        target = str(args[k])
+                        break
+
+            if len(results) > 1:
+                final["narration"] = self.personality.narrate_multi(results, elapsed)
+            else:
+                final["narration"] = self.personality.narrate(
+                    action=action_name, result=final,
+                    target=target, duration_ms=elapsed,
+                )
+        else:
+            final["narration"] = self.personality.narrate(action="", result=final)
 
         # Record for learning
         self._record_history(text, final)

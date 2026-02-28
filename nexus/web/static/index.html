@@ -42,7 +42,7 @@
     <!-- ═══ Header ═══ -->
     <header class="top-bar" role="banner">
         <div class="logo">
-            <span class="logo-icon" aria-hidden="true">⚡</span>
+            <span class="logo-icon arc-reactor" aria-hidden="true">◉</span>
             <span class="logo-text">AUTO<span class="logo-os">CRAT</span></span>
             <span class="version-badge">v2.0</span>
         </div>
@@ -112,27 +112,34 @@
                     <button class="btn-icon" id="clear-terminal" title="Clear terminal" aria-label="Clear terminal">🗑️</button>
                 </div>
                 <div class="terminal-output" id="terminal-output" role="log" aria-live="polite">
-                    <div class="output-line welcome">
-                        <pre>
-  █████╗ ██╗   ██╗████████╗ ██████╗  ██████╗██████╗  █████╗ ████████╗
- ██╔══██╗██║   ██║╚══██╔══╝██╔═══██╗██╔════╝██╔══██╗██╔══██╗╚══██╔══╝
- ███████║██║   ██║   ██║   ██║   ██║██║     ██████╔╝███████║   ██║
- ██╔══██║██║   ██║   ██║   ██║   ██║██║     ██╔══██╗██╔══██║   ██║
- ██║  ██║╚██████╔╝   ██║   ╚██████╔╝╚██████╗██║  ██║██║  ██║   ██║
- ╚═╝  ╚═╝ ╚═════╝    ╚═╝    ╚═════╝  ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
-                        Your PC, on autopilot. v2.0.0
+                    <div class="output-line welcome jarvis-boot">
+                        <pre class="boot-text">
+  ┌─────────────────────────────────────────────────┐
+  │              A U T O C R A T  v2.0              │
+  │         Your Personal AI Assistant              │
+  └─────────────────────────────────────────────────┘
+
+  ◉ Core systems ............ ONLINE
+  ◉ AI Brain ................ ACTIVE
+  ◉ Plugin framework ........ LOADED
+  ◉ Natural language engine . READY
+  ◉ Learning memory ......... SYNCED
+
+  Standing by for instructions.
                         </pre>
-                        <p>Type <span class="cmd-hint" role="button" tabindex="0">help</span> for commands •
-                            <span class="cmd-hint" role="button" tabindex="0">plugins</span> to see modules •
-                            <span class="cmd-hint" role="button" tabindex="0">status</span> for AI brain stats •
-                            Powered by ML + Ollama LLM — try anything in natural language!</p>
+                        <p>Ask me anything in natural language — or try
+                            <span class="cmd-hint" role="button" tabindex="0">help</span> ·
+                            <span class="cmd-hint" role="button" tabindex="0">plugins</span> ·
+                            <span class="cmd-hint" role="button" tabindex="0">status</span> ·
+                            <span class="cmd-hint" role="button" tabindex="0">health check</span>
+                        </p>
                     </div>
                 </div>
                 <!-- Autocomplete suggestions -->
                 <div class="autocomplete-dropdown" id="autocomplete-dropdown" hidden></div>
                 <div class="terminal-input-row">
-                    <span class="prompt" aria-hidden="true">❯</span>
-                    <input type="text" id="terminal-input" placeholder="Type a command or ask something..."
+                    <span class="prompt" aria-hidden="true">◉</span>
+                    <input type="text" id="terminal-input" placeholder="Talk to me..."
                         autocomplete="off" autofocus aria-label="Command input"
                         role="combobox" aria-autocomplete="list" aria-expanded="false">
                     <button class="btn-send" id="btn-send" aria-label="Execute command">⚡</button>

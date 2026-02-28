@@ -311,15 +311,23 @@
             if (data.ai_match) {
                 const pct = Math.round(data.ai_match.confidence * 100);
                 appendTerminal(
-                    "result",
-                    `🧠 AI matched: ${data.ai_match.intent} (${pct}% confidence)`
+                    "meta",
+                    `🧠 ${data.ai_match.intent} (${pct}%)`
                 );
+            }
+
+            // Show JARVIS narration if available
+            if (data.narration) {
+                appendTerminalTyping("narration", data.narration);
             }
 
             const result = data.result || data.results;
 
             if (typeof result === "string") {
-                appendTerminal("result", result);
+                // Don't double-show if narration already covers it
+                if (!data.narration || result !== data.narration) {
+                    appendTerminal("result", result);
+                }
             } else if (Array.isArray(result)) {
                 if (result.length === 0) {
                     appendTerminal("result", "(empty)");
@@ -330,16 +338,33 @@
                 }
             } else if (typeof result === "object" && result !== null) {
                 if (data.preview) {
-                    appendTerminalWithImage(data.result || "Screenshot captured", data.preview);
+                    appendTerminalWithImage(data.narration || "Screenshot captured", data.preview);
                 } else {
                     appendTerminal("result", formatObject(result));
                 }
-            } else {
+            } else if (result !== undefined && result !== null) {
                 appendTerminal("result", String(result));
             }
 
-            // Show duration
-            if (data.duration_ms !== undefined) {
+            // Show suggestions as JARVIS-style hints
+            if (data.suggestions && data.suggestions.length > 0) {
+                const sugDiv = document.createElement("div");
+                sugDiv.className = "output-line suggestions";
+                sugDiv.innerHTML = `<pre>💡 ${data.suggestions.map(s =>
+                    `<span class="suggestion-tag" data-cmd="${escapeHtml(s)}">${escapeHtml(s)}</span>`
+                ).join(" · ")}</pre>`;
+                terminalOutput.appendChild(sugDiv);
+                sugDiv.querySelectorAll(".suggestion-tag").forEach(tag => {
+                    tag.addEventListener("click", () => {
+                        terminalInput.value = tag.dataset.cmd;
+                        terminalInput.focus();
+                    });
+                });
+                terminalOutput.scrollTop = terminalOutput.scrollHeight;
+            }
+
+            // Show duration only if significant
+            if (data.duration_ms !== undefined && data.duration_ms > 100) {
                 appendTerminal("meta", `⏱ ${data.duration_ms}ms`);
             }
         } else {
@@ -352,8 +377,10 @@
                     reject_command: data.reject_command,
                 });
             }
-            appendTerminal("error", `✗ ${data.error || "Unknown error"}`);
-            if (data.hint) {
+            // Use narration for errors if available
+            const errorMsg = data.narration || data.error || "Unknown error";
+            appendTerminal("error", `${errorMsg}`);
+            if (data.hint && !data.narration) {
                 appendTerminal("hint", `💡 ${data.hint}`);
             }
             // Show suggestions as clickable tags
@@ -461,6 +488,31 @@
 
         terminalOutput.appendChild(div);
         terminalOutput.scrollTop = terminalOutput.scrollHeight;
+    }
+
+    /**
+     * Append text with a typing animation (JARVIS effect).
+     */
+    function appendTerminalTyping(type, text) {
+        const div = document.createElement("div");
+        div.className = `output-line ${type}`;
+        const pre = document.createElement("pre");
+        pre.textContent = "";
+        div.appendChild(pre);
+        terminalOutput.appendChild(div);
+        terminalOutput.scrollTop = terminalOutput.scrollHeight;
+
+        let i = 0;
+        const speed = Math.max(8, Math.min(30, 800 / text.length)); // adaptive speed
+        function typeChar() {
+            if (i < text.length) {
+                pre.textContent += text.charAt(i);
+                i++;
+                terminalOutput.scrollTop = terminalOutput.scrollHeight;
+                setTimeout(typeChar, speed);
+            }
+        }
+        typeChar();
     }
 
     // ─── Live Logs ───────────────────────────────────────────────
