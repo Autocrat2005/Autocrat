@@ -1,0 +1,12 @@
+# Optional public HTTPS for the core API/WebSocket (webhooks, desk link).
+# Install Caddy from its official apt repo, set BASE_DOMAIN in the environment,
+# point api.<BASE_DOMAIN> at the VM's public IP, then:
+#   sudo cp deploy/oracle/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#
+# The control plane stays token-protected (Bearer / /ws/v2 first-frame auth).
+# Per-prospect wildcard demo hosting (*.demo domain) is added in Phase 3.
+
+api.{$BASE_DOMAIN} {
+	encode gzip
+	reverse_proxy 127.0.0.1:9000
+}

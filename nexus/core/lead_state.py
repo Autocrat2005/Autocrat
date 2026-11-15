@@ -47,7 +47,7 @@ ENGAGEMENT_RANK: Dict[LeadState, int] = {
 
 _PRE_SEND: Dict[LeadState, FrozenSet[LeadState]] = {
     S.DISCOVERED: frozenset({S.TRIAGED, S.ARCHIVED}),
-    S.TRIAGED: frozenset({S.BUILDING, S.ARCHIVED}),
+    S.TRIAGED: frozenset({S.BUILDING, S.STAGED, S.ARCHIVED}),  # STAGED = draft without a demo
     S.BUILDING: frozenset({S.STAGED, S.TRIAGED, S.ARCHIVED}),  # TRIAGED = build failed, retry
     S.STAGED: frozenset({S.APPROVED, S.ARCHIVED}),
     S.APPROVED: frozenset({S.SENT, S.STAGED}),                  # STAGED = approval withdrawn
@@ -115,4 +115,6 @@ def contact_key(channel: str, value: str) -> str:
         return f"discord:{value.lower()}"
     if channel == "hn":
         return f"hn:{value.lower()}"
+    if channel in ("post", "link"):
+        return f"post:{value.strip()}"
     return f"{channel}:{value.lower()}"

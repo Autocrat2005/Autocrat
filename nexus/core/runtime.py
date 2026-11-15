@@ -71,6 +71,10 @@ class RuntimeControl:
         """Load persisted kill-switch state from the store."""
         self._store = store
         try:
+            persisted_mode = store.kv_get("run_mode")
+            if persisted_mode in RUN_MODES and persisted_mode != self._run_mode:
+                log.warning(f"RUN_MODE restored from last session: {persisted_mode} (env said {self._run_mode})")
+                self._run_mode = persisted_mode
             if store.kv_get("kill_switch") == "engaged":
                 self._killed = True
                 self._kill_reason = store.kv_get("kill_reason") or "persisted"
@@ -103,6 +107,11 @@ class RuntimeControl:
             raise ValueError(f"run mode must be one of {RUN_MODES}")
         with self._lock:
             previous, self._run_mode = self._run_mode, mode
+        if self._store is not None:
+            try:
+                self._store.kv_set("run_mode", mode)  # survives restarts, like the kill switch
+            except Exception as e:
+                log.warning(f"Could not persist run mode: {e}")
         if previous != mode:
             log.warning(f"RUN_MODE {previous} → {mode} (by {actor})")
             EventBus().emit("control.run_mode", {"run_mode": mode, "previous": previous, "actor": actor})

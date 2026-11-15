@@ -73,14 +73,28 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
         if not outreach:
             return None
         draft = html.escape(outreach["draft"][:900])
+        triage = ((lead or {}).get("data") or {}).get("triage") or {}
+        score = ""
+        if triage:
+            score = (f"{html.escape(str(triage.get('icp', '')))} · intent {triage.get('intent')}/10\n"
+                     f"{html.escape(str(triage.get('summary', '')))}\n")
+        where = f"Channel: {html.escape(outreach['channel'])}"
+        if outreach["channel"] == "email" and lead:
+            where += f" → {html.escape(lead.get('contact') or '')}"
+        send_from = ((lead or {}).get("data") or {}).get("send_from")
+        if send_from:
+            where += f"\nSend from: <b>{html.escape(str(send_from))}</b>"
+        rows = [[
+            {"text": "✅ Approve", "callback_data": f"oa:{outreach['id']}"},
+            {"text": "🚫 DNC", "callback_data": f"dnc:{lead_id}"},
+        ]]
+        url = (lead or {}).get("url") or ""
+        if url.startswith(("http://", "https://")):
+            rows.append([{"text": "🔗 Open post", "url": url}])
         return {
             "priority": "orange",
-            "text": (f"🟠 Ready to send · {_lead_label(lead)}\n"
-                     f"Channel: {html.escape(outreach['channel'])}\n\n<i>{draft}</i>"),
-            "buttons": [[
-                {"text": "✅ Approve", "callback_data": f"oa:{outreach['id']}"},
-                {"text": "🚫 DNC", "callback_data": f"dnc:{lead_id}"},
-            ]],
+            "text": f"🟠 Ready to send · {_lead_label(lead)}\n{score}{where}\n\n<i>{draft}</i>",
+            "buttons": rows,
         }
 
     if target in RED_STATES or target in ORANGE_STATES:
@@ -94,7 +108,8 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
 def approved_buttons(outreach_id: str, links: Dict[str, str]) -> List[List[Dict[str, str]]]:
     """Buttons shown after approval: one-tap send from the phone + mark sent."""
     row = []
-    if links.get("phone"):
+    # Telegram URL buttons only accept http(s)/tg links (no mailto:); email drafts stay as text.
+    if (links.get("phone") or "").startswith(("http://", "https://", "tg://")):
         row.append({"text": "📲 Send now", "url": links["phone"]})
     row.append({"text": "✔ Mark sent", "callback_data": f"os:{outreach_id}"})
     return [row]

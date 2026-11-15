@@ -13,5 +13,5 @@ jobs:
         with:
           python-version: "3.12"
       # Core-profile deps only: the suite never imports desktop plugins (pyautogui/pywin32).
-      - run: pip install pytest httpx fastapi uvicorn pyyaml websockets python-multipart pydantic
+      - run: pip install pytest -r requirements-core.txt
       - run: python -m pytest -q

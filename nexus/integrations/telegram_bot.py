@@ -228,6 +228,10 @@ class TelegramBot:
             app.add_handler(CommandHandler("kill", self._cmd_kill))
             app.add_handler(CommandHandler("resume", self._cmd_resume))
             app.add_handler(CommandHandler("mode", self._cmd_mode))
+            app.add_handler(CommandHandler("id", self._cmd_id))
+            app.add_handler(CommandHandler("lead", self._cmd_lead))
+            # Forward any message (Discord copy, Reddit link, group chat) to the bot = capture it as a lead
+            app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND, self._handle_forward))
             app.add_handler(CallbackQueryHandler(self._handle_callback, pattern=r"^(approve|reject|oa|os|dnc):"))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
             log.info("📱 Telegram bot polling started")
@@ -260,6 +264,53 @@ class TelegramBot:
             f"👋 Hey {html.escape(user.first_name or 'there')} — Autocrat is listening.\n"
             f"Alerts and approvals will arrive here. /help for commands.", parse_mode="HTML")
 
+    def _capture_lead(self, text: str, actor: str) -> Dict[str, Any]:
+        engine = self.engine
+        plugin = engine.plugins.get("triage_brain") if engine is not None else None
+        if plugin is None:
+            return {"success": False, "error": "triage_brain plugin isn't loaded (check AUTOCRAT_PLUGIN_PATHS)"}
+        from nexus.core.context import acting_as
+        with acting_as(actor):
+            return plugin.execute("lead_capture", {"text": text})
+
+    async def _cmd_lead(self, update, context):
+        """/lead <text or link>, or reply /lead to a forwarded message."""
+        if not await self._is_authorized(update):
+            return
+        text = (update.message.text or "").partition(" ")[2].strip()
+        replied = update.message.reply_to_message
+        if not text and replied:
+            text = (replied.text or replied.caption or "").strip()
+        if not text:
+            await update.message.reply_text("Paste the post or link after /lead, or forward the message to me.")
+            return
+        await update.effective_chat.send_action("typing")
+        result = await asyncio.get_running_loop().run_in_executor(None, self._capture_lead, text, self._actor(update))
+        await self._reply_result(update.message, result)
+
+    async def _handle_forward(self, update, context):
+        if not await self._is_authorized(update):
+            return
+        text = (update.message.text or update.message.caption or "").strip()
+        if not text:
+            await update.message.reply_text("That forwarded message has no text I can read.")
+            return
+        await update.effective_chat.send_action("typing")
+        result = await asyncio.get_running_loop().run_in_executor(None, self._capture_lead, text, self._actor(update))
+        await self._reply_result(update.message, result)
+
+    async def _cmd_id(self, update, context):
+        """Show IDs for setup. Works for anyone; IDs aren't secrets and grant nothing."""
+        user = update.effective_user
+        chat = update.effective_chat
+        authorized = self.is_authorized_ids(user.id if user else None, chat.id if chat else None)
+        await update.message.reply_text(
+            f"Your user ID: {user.id if user else '?'}\n"
+            f"This chat ID: {chat.id if chat else '?'}\n"
+            f"Authorized: {'yes' if authorized else 'no'}\n\n"
+            "Put user IDs in TELEGRAM_ALLOWED_USER_IDS. For alerts in a group, put the group's "
+            "chat ID (starts with -100) in TELEGRAM_ALLOWED_CHAT_IDS.")
+
     async def _cmd_help(self, update, context):
         if not await self._is_authorized(update):
             return
@@ -269,7 +320,9 @@ class TelegramBot:
             "/kill [reason] — stop all outbound + workers now\n"
             "/resume — release the kill switch (asks for approval)\n"
             "/mode dry_run | /mode live — switch run mode (live asks for approval)\n"
-            "/plugins — loaded plugins\n\n"
+            "/plugins — loaded plugins\n"
+            "/lead &lt;text or link&gt; — capture a lead you spotted (or just forward the message here)\n"
+            "<code>radar</code> / <code>radar run hn</code> — radar status / run a source now\n\n"
             "Or type any command, e.g. <code>leads staged</code>, <code>pipeline</code>.",
             parse_mode="HTML")
 

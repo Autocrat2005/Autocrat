@@ -132,6 +132,38 @@ def main():
     else:
         log.info("📱 Telegram not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USER_IDS in .env)")
 
+    # ── WhatsApp Web: alerts (founders' own numbers/group) + inbound closer ──
+    # Both share ONE logged-in WhatsApp Web session on one thread.
+    wa_alerts = None
+    from nexus.core.secrets import env_bool
+    alerts_on = env_bool("WHATSAPP_ALERTS_ENABLED", False)
+    closer_on = env_bool("WHATSAPP_CLOSER_ENABLED", False)
+    if alerts_on or closer_on:
+        try:
+            from nexus.integrations.whatsapp_alerts import WhatsAppAlertNotifier
+            wa_alerts = WhatsAppAlertNotifier(store=engine.store)
+            if alerts_on:
+                wa_alerts.attach()
+            if closer_on:
+                from nexus.integrations.whatsapp_closer import WhatsAppCloser
+                WhatsAppCloser(wa_alerts, store=engine.store).attach()
+                log.info(f"💬 WhatsApp closer on ({engine.runtime.run_mode}: "
+                         f"{'drafts only' if engine.runtime.is_dry_run else 'SENDING'})")
+            wa_alerts.start()
+        except Exception as e:
+            log.warning(f"WhatsApp alerts/closer failed to start: {e}")
+
+    # ── Email channel: openers + AI replies (same closer brain + playbook) ──
+    if env_bool("EMAIL_ENABLED", False):
+        try:
+            from nexus.integrations.email_channel import AlertFanout, EmailWorker
+            from nexus.integrations.whatsapp_closer import WhatsAppCloser
+            fanout = AlertFanout([telegram_bot, wa_alerts if alerts_on else None])
+            brain = WhatsAppCloser(fanout, store=engine.store)
+            EmailWorker(engine.store, brain, fanout).start()
+        except Exception as e:
+            log.warning(f"Email channel failed to start: {e}")
+
     # ── Initialize Heartbeat ──
     heartbeat = None
     hb_cfg = cfg.get("heartbeat", {})

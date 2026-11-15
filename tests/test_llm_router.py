@@ -64,3 +64,71 @@ def test_failed_calls_are_recorded(store):
     with pytest.raises(RuntimeError):
         router.complete("x")
     assert store.month_spend()["calls"] == 1
+
+
+def make_paced_router(store, providers):
+    cfg = Config()
+    cfg.set("llm", "routes", {"default": ["anthropic:haiku", "deepseek:ds"]})
+    cfg.set("llm", "pricing", {"haiku": {"input": 0.10, "output": 0.50}, "ds": {"input": 0.30, "output": 1.20}})
+    cfg.set("llm", "provider_budgets", {"anthropic": 9.0, "deepseek": 5.0})
+    cfg.set("llm", "monthly_budget_usd", 14)
+    cfg.set("llm", "budget_window_days", 30)
+    cfg.set("llm", "daily_burst", 2.0)
+    cfg.set("llm", "max_prompt_tokens", {"haiku": 1000})
+    return LLMRouter(store=store, config=cfg, providers={p.name: p for p in providers})
+
+
+def test_falls_back_when_primary_hits_its_daily_pace(store):
+    a, d = FakeProvider("anthropic"), FakeProvider("deepseek")
+    router = make_paced_router(store, [a, d])
+    # anthropic: cap 9/30*2 = $0.60, fake call $0.15 → 4 calls.
+    # deepseek:  cap 5/30*2 = $0.333, fake call $0.42 → 1 call, then both are paced out.
+    used = [router.complete("x").provider for _ in range(5)]
+    assert used == ["anthropic"] * 4 + ["deepseek"]
+    with pytest.raises(BudgetExceeded, match="daily pace"):
+        router.complete("x")
+    status = router.budget_status()
+    assert status["providers"]["anthropic"]["blocked"].startswith("anthropic daily pace")
+    assert status["providers"]["deepseek"]["daily_cap_usd"] == pytest.approx(0.3333, abs=1e-3)
+
+
+def test_oversized_prompt_skips_haiku(store):
+    a, d = FakeProvider("anthropic"), FakeProvider("deepseek")
+    router = make_paced_router(store, [a, d])
+    result = router.complete("y" * 10_000)          # ~2,857 tokens > 1,000 limit for haiku
+    assert result.provider == "deepseek" and a.calls == 0
+
+
+def test_provider_error_falls_through_chain(store):
+    class Down(FakeProvider):
+        def complete(self, **kwargs):
+            raise RuntimeError("503")
+
+    router = make_paced_router(store, [Down("anthropic"), FakeProvider("deepseek")])
+    assert router.complete("x").provider == "deepseek"
+
+
+def test_deepseek_provider_parses_openai_style_response(monkeypatch):
+    import httpx
+    from nexus.core.llm_router import DeepSeekProvider
+
+    captured = {}
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"ok": true}'}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 5}}
+
+    def fake_post(url, json=None, timeout=None, headers=None):
+        captured.update(url=url, body=json, headers=headers)
+        return Resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    result = DeepSeekProvider(api_key="k").complete(model="deepseek-chat", prompt="hi", json_mode=True)
+    assert captured["url"].endswith("/chat/completions")
+    assert captured["body"]["response_format"] == {"type": "json_object"}
+    assert captured["headers"]["Authorization"] == "Bearer k"
+    assert (result.input_tokens, result.output_tokens, result.text) == (12, 5, '{"ok": true}')

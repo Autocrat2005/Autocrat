@@ -317,6 +317,22 @@ class Store:
         self._events.emit("lead.created", {"lead_id": lead_id, "lead": lead, "actor": actor})
         return lead, True
 
+    def find_lead_by_contact(self, contact_key: str) -> Optional[Dict[str, Any]]:
+        """Most recently updated lead for a normalised contact (e.g. 'email:jane@x.com')."""
+        return _row(self._conn().execute(
+            "SELECT * FROM leads WHERE contact_key=? ORDER BY updated_at DESC LIMIT 1", (contact_key,)).fetchone())
+
+    def list_outreach(self, status: str, channel: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        sql, params = "SELECT * FROM outreach WHERE status=?", [status]
+        if channel:
+            sql += " AND channel=?"
+            params.append(channel)
+        rows = self._conn().execute(sql + " ORDER BY created_at LIMIT ?", (*params, limit)).fetchall()
+        return [_row(r) for r in rows]
+
+    def get_lead_by_dedupe_key(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
+        return _row(self._conn().execute("SELECT * FROM leads WHERE dedupe_key=?", (dedupe_key,)).fetchone())
+
     def get_lead(self, lead_id: str) -> Optional[Dict[str, Any]]:
         return _row(self._conn().execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone())
 
@@ -347,6 +363,23 @@ class Store:
         rows = self._conn().execute(
             "SELECT * FROM lead_events WHERE lead_id=? ORDER BY id", (lead_id,)).fetchall()
         return [_row(r) for r in rows]
+
+    def log_event(self, lead_id: str, event_type: str, payload: Optional[Dict[str, Any]] = None,
+                  actor: str = "system") -> int:
+        """Append a non-state event (e.g. message_in / message_out) to a lead's history."""
+        lead = self.get_lead(lead_id)
+        if not lead:
+            raise KeyError(f"Unknown lead {lead_id}")
+        with self.transaction() as c:
+            cur = c.execute(
+                "INSERT INTO lead_events(lead_id, ts, type, from_state, to_state, actor, payload)"
+                " VALUES(?,?,?,?,?,?,?)",
+                (lead_id, _now(), event_type, lead["state"], lead["state"], actor,
+                 json.dumps(payload or {}, default=str)))
+            event_id = cur.lastrowid
+        self._events.emit(f"lead.{event_type}", {"lead_id": lead_id, "event_id": event_id,
+                                                 "payload": payload or {}, "actor": actor})
+        return event_id
 
     def transition(self, lead_id: str, to_state: str, *, actor: str = "system",
                    reason: str = "", payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -510,11 +543,14 @@ class Store:
                  float(cost_usd), lead_id, 1 if ok else 0),
             )
 
-    def spend_since(self, since_ts: float) -> Dict[str, Any]:
-        row = self._conn().execute(
-            "SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(input_tokens),0),"
-            " COALESCE(SUM(output_tokens),0), COUNT(*) FROM budget_ledger WHERE ts>=?",
-            (since_ts,)).fetchone()
+    def spend_since(self, since_ts: float, provider: Optional[str] = None) -> Dict[str, Any]:
+        sql = ("SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(input_tokens),0),"
+               " COALESCE(SUM(output_tokens),0), COUNT(*) FROM budget_ledger WHERE ts>=?")
+        params: Tuple[Any, ...] = (since_ts,)
+        if provider:
+            sql += " AND provider=?"
+            params += (provider,)
+        row = self._conn().execute(sql, params).fetchone()
         return {"cost_usd": round(row[0], 6), "input_tokens": row[1], "output_tokens": row[2], "calls": row[3]}
 
     def month_spend(self) -> Dict[str, Any]:

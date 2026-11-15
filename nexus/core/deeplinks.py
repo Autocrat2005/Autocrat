@@ -53,4 +53,10 @@ def compose_links(channel: str, contact: str, text: str, subject: str = "") -> d
     if channel == "reddit":
         url = reddit_message_url(contact, subject or "Quick idea", text)
         return {"desk": url, "phone": url}
+    if channel == "email":
+        url = f"mailto:{contact}?{urlencode({'subject': subject or 'Quick question', 'body': text}, quote_via=quote)}"
+        return {"desk": url, "phone": url}
+    if channel in ("post", "hn", "link") and contact.startswith("http"):
+        # No DM channel (e.g. Hacker News): open the thread and reply there.
+        return {"desk": contact, "phone": contact}
     return {}

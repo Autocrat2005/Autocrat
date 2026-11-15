@@ -52,18 +52,36 @@ DEFAULT_CONFIG = {
     },
     "ai": {},
     "llm": {
-        # task → "provider:model". Providers: gemini | anthropic | ollama.
+        # task → "provider:model" or a list tried in order (fallback chain).
+        # Spend order: free local prefilter → Claude Haiku 5.5 (cheapest per token
+        # per current listings) → DeepSeek Flash (overflow) → local Llama (last resort).
         "routes": {
-            "default": "gemini:gemini-2.5-flash",
-            "triage": "gemini:gemini-2.5-flash-lite",
-            "copy": "anthropic:claude-haiku-5-5",
-            "local": "ollama:qwen2.5-coder:3b",
+            "prefilter": "ollama:llama3.2:3b",
+            "default": ["anthropic:claude-haiku-5-5", "deepseek:deepseek-flash", "ollama:llama3.2:3b"],
+            "triage": ["anthropic:claude-haiku-5-5", "deepseek:deepseek-flash", "ollama:llama3.2:3b"],
+            "spec": ["deepseek:deepseek-flash", "anthropic:claude-haiku-5-5", "ollama:llama3.2:3b"],
+            # Prospect-facing text never falls back to the small local model.
+            "copy": ["anthropic:claude-haiku-5-5", "deepseek:deepseek-flash"],
+            "closer": ["anthropic:claude-haiku-5-5", "deepseek:deepseek-flash"],
+            "local": "ollama:llama3.2:3b",
         },
-        # USD per 1M tokens, {input, output}. VERIFY against provider price
-        # pages before trusting the budget numbers; unknown models cost 0
-        # and are logged with a warning.
-        "pricing": {},
-        "monthly_budget_usd": 40,
+        # USD per 1M tokens. VERIFY on the providers' price pages (third-party
+        # listings checked 2026-11-15). DeepSeek uses its peak rate to stay conservative.
+        # cache_read / cache_write apply to Anthropic prompt caching.
+        "pricing": {
+            "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+            "deepseek-flash": {"input": 0.30, "output": 1.20},
+        },
+        # Prepaid credit per provider, paced over a rolling 30-day window.
+        "provider_budgets": {"anthropic": 7.8, "deepseek": 4.9},
+        "monthly_budget_usd": 12.7,
+        "budget_window_days": 30,
+        "daily_burst": 2.0,
+        # Haiku 5.5 bills 5x for prompts over 100K tokens: never send one.
+        "max_prompt_tokens": {"claude-haiku-5-5": 90000},
+        # Cache Anthropic system prompts at least this long (chars); shorter ones
+        # aren't worth the cache-write premium.
+        "anthropic_cache_min_chars": 4000,
     },
     "system": {
         "safe_mode": False,

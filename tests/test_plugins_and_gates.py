@@ -164,3 +164,16 @@ def test_autocorrect_never_rewrites_a_command_that_already_parses():
     parsed = parser.parse("run mode live")
     assert [(p.plugin, p.action) for p in parsed] == [("_meta", "run_mode")]
     assert parser.parse("kill switch")[0].action == "kill_switch"      # not process_controller.kill
+
+
+def test_run_mode_survives_restart(make_engine):
+    from nexus.core.runtime import RuntimeControl
+    engine = make_engine()
+    pending = engine.execute("run mode live")
+    engine.execute(f"approve {pending['confirmation_id']}")
+    assert engine.store.kv_get("run_mode") == "live"
+    RuntimeControl.reset_for_tests()              # simulate a restart (env still says dry_run)
+    fresh = RuntimeControl()
+    assert fresh.run_mode == "dry_run"
+    fresh.attach_store(engine.store)
+    assert fresh.run_mode == "live"
