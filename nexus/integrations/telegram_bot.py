@@ -1,144 +1,218 @@
 """
-Autocrat — Telegram Bot Integration
-Connects NEXUS to Telegram: send commands from your phone, get results back.
-Also receives forwarded results from other channels (web, VS Code, heartbeat).
+Autocrat — Telegram Bot Integration (alerts + approvals + commands).
 
 Setup:
-  1. Message @BotFather on Telegram → /newbot → get your bot token
-  2. Add the token to nexus_config.yaml under telegram.bot_token
-  3. Message your bot /start to get your chat_id
-  4. Add allowed chat_ids to config for security
+  1. @BotFather → /newbot → put the token in .env as TELEGRAM_BOT_TOKEN
+  2. Each founder messages the bot /start; it replies with their numeric user ID
+  3. Put those IDs in .env: TELEGRAM_ALLOWED_USER_IDS=111111111,222222222
+  4. Optional: TELEGRAM_ALLOWED_CHAT_IDS=<private group id> to restrict where
+     commands are accepted and where alerts go (otherwise alerts DM each user)
+
+Security:
+  * Authorization is by Telegram USER id, never by chat id alone, so anyone
+    added to a group can't approve sends. There is no first-come auto-register.
+  * Every approve / reject / kill / resume is written to the audit log with
+    the approving user's id.
+  * Long polling only — no public webhook endpoint.
 """
 
 import asyncio
-import threading
 import html
-from typing import Optional, Dict, List, Set
+import json
+import threading
+from typing import Any, Dict, Iterable, List, Optional, Set
+
+from nexus.core.events import EventBus
 from nexus.core.logger import get_logger
+from nexus.core.secrets import env_list, get_secret
+from nexus.integrations.telegram_alerts import approved_buttons, build_alert, in_quiet_hours
 
 log = get_logger("telegram")
 
 
 class TelegramBot:
-    """
-    Telegram bot that bridges NEXUS commands.
-    Runs in its own thread with its own event loop.
-    """
+    """Telegram bridge running in its own thread with its own event loop."""
 
-    def __init__(self, bot_token: str, allowed_chat_ids: List[str] = None,
-                 message_bus=None):
+    def __init__(self, bot_token: str, allowed_user_ids: Optional[Iterable[str]] = None,
+                 allowed_chat_ids: Optional[Iterable[str]] = None, message_bus=None,
+                 events: Optional[EventBus] = None, store=None):
         self.bot_token = bot_token
-        self.allowed_chat_ids: Set[str] = set(str(c) for c in (allowed_chat_ids or []))
+        self.allowed_user_ids: Set[str] = {str(u) for u in (allowed_user_ids if allowed_user_ids is not None
+                                                            else env_list("TELEGRAM_ALLOWED_USER_IDS"))}
+        self.allowed_chat_ids: Set[str] = {str(c) for c in (allowed_chat_ids if allowed_chat_ids is not None
+                                                            else env_list("TELEGRAM_ALLOWED_CHAT_IDS"))}
+        self.quiet_hours = get_secret("TELEGRAM_QUIET_HOURS", "23-8")
         self.bus = message_bus
+        self.events = events or EventBus()
+        self._store = store
         self._bot = None
         self._app = None
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
 
-        # Register with message bus for cross-channel results
+        if not self.allowed_user_ids:
+            log.warning("TELEGRAM_ALLOWED_USER_IDS is empty — the bot will refuse every user "
+                        "until you add your numeric Telegram user IDs to .env")
+
         if self.bus:
             self.bus.register_channel("telegram", self._receive_bus_message)
+        for pattern in ("lead.*", "control.*"):
+            self.events.on(pattern, self._on_event)
+
+    # ── helpers ──────────────────────────────────────────────────
+
+    @property
+    def engine(self):
+        return getattr(self.bus, "_engine", None) if self.bus else None
+
+    @property
+    def store(self):
+        if self._store is None and self.engine is not None:
+            self._store = self.engine.store
+        return self._store
+
+    def alert_recipients(self) -> List[int]:
+        ids = self.allowed_chat_ids or self.allowed_user_ids
+        return [int(i) for i in ids]
+
+    @staticmethod
+    def _actor(update) -> str:
+        user = update.effective_user
+        if not user:
+            return "telegram:unknown"
+        return f"telegram:{user.id}:{user.first_name or ''}".rstrip(":")
+
+    def is_authorized_ids(self, user_id: Optional[int], chat_id: Optional[int]) -> bool:
+        if user_id is None or str(user_id) not in self.allowed_user_ids:
+            return False
+        if self.allowed_chat_ids and str(chat_id) not in self.allowed_chat_ids:
+            return False
+        return True
+
+    async def _is_authorized(self, update) -> bool:
+        user = update.effective_user
+        chat = update.effective_chat
+        ok = self.is_authorized_ids(user.id if user else None, chat.id if chat else None)
+        if not ok:
+            log.warning(f"Rejected Telegram user {user.id if user else '?'} in chat {chat.id if chat else '?'}")
+        return ok
+
+    def _execute(self, text: str, actor: str) -> Dict[str, Any]:
+        if self.engine is None:
+            return {"success": False, "error": "Engine not connected"}
+        return self.engine.execute(text, actor=actor)
+
+    def _audit(self, actor: str, action: str, detail: Dict[str, Any]):
+        try:
+            if self.store is not None:
+                self.store.audit(actor, action, detail)
+        except Exception as e:
+            log.warning(f"Audit write failed: {e}")
+
+    @staticmethod
+    def _keyboard(rows: List[List[Dict[str, str]]]):
+        if not rows:
+            return None
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(b["text"], url=b["url"]) if "url" in b
+             else InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in row]
+            for row in rows
+        ])
+
+    # ── alerts (called from ANY thread) ──────────────────────────
+
+    def _on_event(self, entry: Dict[str, Any]):
+        try:
+            alert = build_alert(entry, store=self.store)
+        except Exception as e:
+            log.warning(f"Alert build failed for {entry.get('event')}: {e}")
+            return
+        if alert:
+            self.notify(alert["text"], priority=alert["priority"], buttons=alert.get("buttons"))
+
+    def notify(self, text: str, priority: str = "orange",
+               buttons: Optional[List[List[Dict[str, str]]]] = None) -> bool:
+        """Thread-safe: schedule an alert on the bot's own loop."""
+        loop = self._loop
+        if not (self._bot and loop and loop.is_running()):
+            log.debug(f"Telegram not running — alert dropped: {text[:80]}")
+            return False
+        silent = priority != "red" and in_quiet_hours(self.quiet_hours)
+        asyncio.run_coroutine_threadsafe(self._send_to_all(text, buttons, silent), loop)
+        return True
+
+    async def _send_to_all(self, text: str, buttons, silent: bool):
+        markup = self._keyboard(buttons or [])
+        for chat_id in self.alert_recipients():
+            try:
+                await self._bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML",
+                                             reply_markup=markup, disable_notification=silent,
+                                             disable_web_page_preview=True)
+            except Exception as e:
+                log.warning(f"Telegram alert to {chat_id} failed: {e}")
+
+    # ── cross-channel results from the message bus ──────────────
 
     async def _receive_bus_message(self, msg):
-        """Called by message bus when other channels produce results."""
-        if not self._bot or not self.allowed_chat_ids:
+        if not self._bot or msg.source == "telegram":
             return
-
         result = msg.result or {}
-        source = msg.source
-        text = msg.text
-
-        # Confirmation prompt from another channel (web/vscode/etc)
         if result.get("requires_confirmation"):
-            for chat_id in self.allowed_chat_ids:
-                await self._send_confirmation_to_chat(int(chat_id), result, source, text)
+            for chat_id in self.alert_recipients():
+                await self._send_confirmation_to_chat(chat_id, result, msg.source, msg.text)
             return
-
-        # Format the forwarded result
         output = result.get("result", result.get("error", "No output"))
         if isinstance(output, (dict, list)):
-            import json
             output = json.dumps(output, indent=2, default=str)[:3000]
-
-        success = "✅" if result.get("success") else "❌"
-        header = f"📨 <b>From {source.upper()}</b>\n"
-        body = (
-            f"{header}"
-            f"<b>Command:</b> <code>{html.escape(str(text))}</code>\n"
-            f"{success} <b>Result:</b>\n"
-            f"<pre>{html.escape(str(output)[:2000])}</pre>"
-        )
-
-        for chat_id in self.allowed_chat_ids:
+        icon = "✅" if result.get("success") else "❌"
+        body = (f"📨 <b>From {html.escape(msg.source.upper())}</b>\n"
+                f"<b>Command:</b> <code>{html.escape(str(msg.text))}</code>\n"
+                f"{icon} <b>Result:</b>\n<pre>{html.escape(str(output)[:2000])}</pre>")
+        for chat_id in self.alert_recipients():
             try:
-                await self._bot.send_message(
-                    chat_id=int(chat_id),
-                    text=body,
-                    parse_mode="HTML",
-                )
+                await self._bot.send_message(chat_id=chat_id, text=body, parse_mode="HTML")
             except Exception as e:
                 log.warning(f"Failed to send to Telegram chat {chat_id}: {e}")
 
+    def _confirmation_markup(self, confirmation_id: str):
+        return self._keyboard([[
+            {"text": "✅ Approve", "callback_data": f"approve:{confirmation_id}"},
+            {"text": "❌ Reject", "callback_data": f"reject:{confirmation_id}"},
+        ]])
+
+    def _confirmation_text(self, result: Dict, source: str = "", text: str = "") -> str:
+        reasons = result.get("reasons") or ["sensitive action detected"]
+        reason_text = "\n".join(f"• {r}" for r in reasons[:4])
+        origin = f" (from {html.escape(source.upper())})" if source else ""
+        command = f"<b>Command:</b> <code>{html.escape(str(text)[:200])}</code>\n" if text else ""
+        return (f"⚠️ <b>Approval Required</b>{origin}\n"
+                f"<b>ID:</b> <code>{html.escape(result.get('confirmation_id', ''))}</code>\n"
+                f"{command}<b>Reason(s):</b>\n{html.escape(reason_text)}")
+
     async def _send_confirmation_to_chat(self, chat_id: int, result: Dict, source: str, text: str):
-        """Send approve/reject buttons directly via bot API."""
-        try:
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        except Exception:
-            await self._bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    "⚠️ Approval required for a sensitive command.\n"
-                    f"Reply with: {result.get('approve_command', 'approve <id>')}"
-                ),
-            )
-            return
+        await self._bot.send_message(chat_id=chat_id, text=self._confirmation_text(result, source, text),
+                                     parse_mode="HTML",
+                                     reply_markup=self._confirmation_markup(result.get("confirmation_id", "")))
 
-        confirmation_id = result.get("confirmation_id", "")
-        reasons = result.get("reasons") or []
-        reason_text = "\n".join(f"• {r}" for r in reasons[:4]) if reasons else "• sensitive action detected"
-
-        body = (
-            f"⚠️ <b>Approval Required</b> (from {source.upper()})\n"
-            f"<b>ID:</b> <code>{html.escape(confirmation_id)}</code>\n"
-            f"<b>Command:</b> <code>{html.escape(str(text)[:200])}</code>\n"
-            f"<b>Reason(s):</b>\n{html.escape(reason_text)}"
-        )
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Approve", callback_data=f"approve:{confirmation_id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{confirmation_id}"),
-            ]
-        ])
-        await self._bot.send_message(chat_id=chat_id, text=body, parse_mode="HTML", reply_markup=keyboard)
+    # ── lifecycle ────────────────────────────────────────────────
 
     def start(self):
-        """Start the bot in a background thread."""
         if self._running:
             return
-
         try:
-            from telegram import Update, Bot
-            from telegram.ext import (
-                Application, CommandHandler, MessageHandler,
-                filters, ContextTypes,
-            )
+            import telegram  # noqa: F401
         except ImportError:
             log.error("python-telegram-bot not installed. Run: pip install python-telegram-bot")
             return
-
         self._running = True
-        self._thread = threading.Thread(target=self._run_bot, daemon=True)
+        self._thread = threading.Thread(target=self._run_bot, daemon=True, name="telegram-bot")
         self._thread.start()
         log.info("🤖 Telegram bot starting in background...")
 
     def _run_bot(self):
-        """Bot event loop (runs in its own thread)."""
-        from telegram import Update, Bot
-        from telegram.ext import (
-            Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-            filters, ContextTypes,
-        )
+        from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
@@ -147,26 +221,19 @@ class TelegramBot:
             app = Application.builder().token(self.bot_token).build()
             self._app = app
             self._bot = app.bot
-
-            # Command handlers
             app.add_handler(CommandHandler("start", self._cmd_start))
             app.add_handler(CommandHandler("help", self._cmd_help))
             app.add_handler(CommandHandler("status", self._cmd_status))
             app.add_handler(CommandHandler("plugins", self._cmd_plugins))
-            app.add_handler(CallbackQueryHandler(self._handle_confirmation_callback, pattern=r"^(approve|reject):"))
-
-            # All other text → NEXUS command
-            app.add_handler(MessageHandler(
-                filters.TEXT & ~filters.COMMAND, self._handle_message
-            ))
-
-            # Start polling
+            app.add_handler(CommandHandler("kill", self._cmd_kill))
+            app.add_handler(CommandHandler("resume", self._cmd_resume))
+            app.add_handler(CommandHandler("mode", self._cmd_mode))
+            app.add_handler(CallbackQueryHandler(self._handle_callback, pattern=r"^(approve|reject|oa|os|dnc):"))
+            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
             log.info("📱 Telegram bot polling started")
             await app.initialize()
             await app.start()
             await app.updater.start_polling(drop_pending_updates=True)
-
-            # Keep running
             try:
                 while self._running:
                     await asyncio.sleep(1)
@@ -178,236 +245,151 @@ class TelegramBot:
         self._loop.run_until_complete(_main())
 
     def stop(self):
-        """Stop the bot."""
         self._running = False
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
 
-    # ── Telegram Handlers ──────────────────────────────────────────
-
-    async def _is_authorized(self, update) -> bool:
-        """Check if the user is allowed to use the bot."""
-        chat_id = str(update.effective_chat.id)
-        if not self.allowed_chat_ids:
-            # No whitelist = first user auto-registers
-            self.allowed_chat_ids.add(chat_id)
-            log.info(f"Auto-registered Telegram chat: {chat_id}")
-            return True
-        return chat_id in self.allowed_chat_ids
+    # ── command handlers ─────────────────────────────────────────
 
     async def _cmd_start(self, update, context):
-        """Handle /start command."""
-        chat_id = update.effective_chat.id
-        name = update.effective_user.first_name or "there"
-
-        welcome = (
-            f"👋 Hey {name}! I'm <b>Autocrat</b>.\n\n"
-            f"🆔 Your chat ID: <code>{chat_id}</code>\n\n"
-            f"Send me any command and I'll execute it on your PC:\n"
-            f"• <code>volume 50</code>\n"
-            f"• <code>screenshot</code>\n"
-            f"• <code>search youtube for lofi</code>\n"
-            f"• <code>lock pc</code>\n"
-            f"• <code>sysinfo</code>\n"
-            f"• Or any natural language!\n\n"
-            f"Type /help for all commands."
-        )
-        await update.message.reply_text(welcome, parse_mode="HTML")
-
+        user = update.effective_user
         if not await self._is_authorized(update):
             await update.message.reply_text(
-                "⚠️ You're not authorized. Add your chat ID to "
-                "nexus_config.yaml → telegram.allowed_chat_ids"
-            )
+                f"⛔ Not authorized.\nYour Telegram user ID is {user.id if user else '?'} — "
+                f"add it to TELEGRAM_ALLOWED_USER_IDS in .env on the Autocrat machine.")
+            return
+        await update.message.reply_text(
+            f"👋 Hey {html.escape(user.first_name or 'there')} — Autocrat is listening.\n"
+            f"Alerts and approvals will arrive here. /help for commands.", parse_mode="HTML")
 
     async def _cmd_help(self, update, context):
-        """Handle /help command."""
         if not await self._is_authorized(update):
             return
+        await update.message.reply_text(
+            "<b>🧠 Autocrat — Telegram deck</b>\n\n"
+            "/status — run mode, kill switch, pipeline counts\n"
+            "/kill [reason] — stop all outbound + workers now\n"
+            "/resume — release the kill switch (asks for approval)\n"
+            "/mode dry_run | /mode live — switch run mode (live asks for approval)\n"
+            "/plugins — loaded plugins\n\n"
+            "Or type any command, e.g. <code>leads staged</code>, <code>pipeline</code>.",
+            parse_mode="HTML")
 
-        help_text = (
-            "<b>🧠 Autocrat — Telegram Control</b>\n\n"
-            "<b>Commands:</b>\n"
-            "/status — System status\n"
-            "/plugins — List plugins\n"
-            "/help — This help\n\n"
-            "<b>Just type anything to execute:</b>\n"
-            "<code>open chrome</code>\n"
-            "<code>set volume to 30</code>\n"
-            "<code>search youtube for python tutorial</code>\n"
-            "<code>take screenshot</code>\n"
-            "<code>what time is it</code>\n"
-            "<code>minimize all</code>\n"
-            "<code>daily summary</code>\n\n"
-            "💡 You'll also receive results from web dashboard & VS Code commands here!"
-        )
-        await update.message.reply_text(help_text, parse_mode="HTML")
+    async def _reply_result(self, message, result: Dict[str, Any]):
+        if result.get("requires_confirmation"):
+            await message.reply_text(self._confirmation_text(result), parse_mode="HTML",
+                                     reply_markup=self._confirmation_markup(result.get("confirmation_id", "")))
+            return
+        output = result.get("result", result.get("error", "No output"))
+        if isinstance(output, (dict, list)):
+            output = json.dumps(output, indent=2, default=str)
+        icon = "✅" if result.get("success") else "❌"
+        url_line = f"\n🔗 {result['url']}" if result.get("url") else ""
+        await message.reply_text(f"{icon} {str(output)[:3500]}{url_line}")
+
+    async def _run_in_thread(self, text: str, actor: str) -> Dict[str, Any]:
+        return await asyncio.get_running_loop().run_in_executor(None, self._execute, text, actor)
 
     async def _cmd_status(self, update, context):
-        """Handle /status — quick system info."""
         if not await self._is_authorized(update):
             return
-
-        await update.message.reply_text("⏳ Fetching system status...")
-
-        if self.bus and self.bus._engine:
-            result = self.bus._engine.execute("sysinfo")
-            output = result.get("result", "No data")
-            if isinstance(output, (dict, list)):
-                import json
-                output = json.dumps(output, indent=2, default=str)[:3000]
-            await update.message.reply_text(
-                f"<pre>{html.escape(str(output)[:3500])}</pre>",
-                parse_mode="HTML",
-            )
-        else:
-            await update.message.reply_text("❌ Engine not connected")
+        await self._reply_result(update.message, await self._run_in_thread("pipeline", self._actor(update)))
 
     async def _cmd_plugins(self, update, context):
-        """Handle /plugins — list loaded plugins."""
         if not await self._is_authorized(update):
             return
-
-        if self.bus and self.bus._engine:
-            lines = []
-            for p in self.bus._engine.plugins.values():
-                cmds = len(p.get_commands())
-                lines.append(f"{p.icon} <b>{p.name}</b> — {cmds} commands")
-            text = "\n".join(lines)
-            await update.message.reply_text(text, parse_mode="HTML")
-        else:
+        if self.engine is None:
             await update.message.reply_text("❌ Engine not connected")
+            return
+        lines = [f"{p.icon} <b>{html.escape(p.name)}</b> — {len(p.get_commands())} commands"
+                 for p in self.engine.plugins.values()]
+        await update.message.reply_text("\n".join(lines) or "No plugins", parse_mode="HTML")
+
+    async def _cmd_kill(self, update, context):
+        if not await self._is_authorized(update):
+            return
+        actor = self._actor(update)
+        reason = " ".join(context.args) if context.args else "telegram /kill"
+        self._audit(actor, "kill_switch", {"reason": reason})
+        if self.engine is not None:
+            self.engine.runtime.engage_kill_switch(reason=reason, actor=actor)
+        await update.message.reply_text("🛑 Kill switch engaged.")
+
+    async def _cmd_resume(self, update, context):
+        if not await self._is_authorized(update):
+            return
+        await self._reply_result(update.message, await self._run_in_thread("resume", self._actor(update)))
+
+    async def _cmd_mode(self, update, context):
+        if not await self._is_authorized(update):
+            return
+        mode = (context.args[0] if context.args else "").lower()
+        text = f"run mode {mode}" if mode in ("dry_run", "live") else "run mode"
+        await self._reply_result(update.message, await self._run_in_thread(text, self._actor(update)))
 
     async def _handle_message(self, update, context):
-        """Handle any text message as a NEXUS command."""
         if not await self._is_authorized(update):
             await update.message.reply_text("⛔ Not authorized")
             return
-
-        text = update.message.text.strip()
+        text = (update.message.text or "").strip()
         if not text:
             return
-
-        chat_id = str(update.effective_chat.id)
-        user = update.effective_user.first_name or "Telegram"
-
-        # Send typing indicator
         await update.effective_chat.send_action("typing")
-
-        # Execute via message bus (or direct engine)
+        user = update.effective_user
         if self.bus:
-            msg = self.bus.send(
-                text=text,
-                source="telegram",
-                channel_id=chat_id,
-                user=user,
-                reply_to="telegram",  # Reply to self
-            )
+            msg = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: self.bus.send(text=text, source="telegram",
+                                            channel_id=str(update.effective_chat.id),
+                                            user=f"{user.id}:{user.first_name or ''}",
+                                            reply_to="telegram"))
             result = msg.result
-        elif self.bus and self.bus._engine:
-            result = self.bus._engine.execute(text)
         else:
-            result = {"success": False, "error": "Engine not connected"}
+            result = await self._run_in_thread(text, self._actor(update))
+        await self._reply_result(update.message, result)
 
-        # Format result
-        success = result.get("success", False)
-        icon = "✅" if success else "❌"
-
-        # Destructive action confirmation flow
-        if result.get("requires_confirmation"):
-            await self._send_confirmation_prompt(update.message, result)
-            return
-
-        output = result.get("result", result.get("error", "No output"))
-
-        # Handle AI conversational responses
-        if result.get("ai_source"):
-            await update.message.reply_text(str(output))
-            return
-
-        # Format structured output
-        if isinstance(output, dict):
-            import json
-            output = json.dumps(output, indent=2, default=str)
-        elif isinstance(output, list):
-            import json
-            output = json.dumps(output, indent=2, default=str)
-
-        output_str = str(output)[:3500]
-
-        # Check for URL in result
-        url = result.get("url")
-        url_line = f"\n🔗 {url}" if url else ""
-
-        duration = result.get("duration_ms")
-        dur_line = f"\n⏱ {duration}ms" if duration else ""
-
-        reply = f"{icon} {output_str}{url_line}{dur_line}"
-
-        await update.message.reply_text(reply)
-
-    async def _send_confirmation_prompt(self, message, result: Dict):
-        """Send inline approval buttons for pending destructive actions."""
-        try:
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        except Exception:
-            await message.reply_text(
-                "⚠️ Confirmation required, but telegram inline buttons unavailable. "
-                f"Reply with: {result.get('approve_command')}"
-            )
-            return
-
-        confirmation_id = result.get("confirmation_id", "")
-        reasons = result.get("reasons") or []
-        reason_text = "\n".join(f"• {r}" for r in reasons[:4]) if reasons else "• sensitive action detected"
-
-        text = (
-            "⚠️ <b>Approval Required</b>\n"
-            f"<b>ID:</b> <code>{confirmation_id}</code>\n"
-            f"<b>Reason(s):</b>\n{html.escape(reason_text)}\n\n"
-            "Approve execution?"
-        )
-
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Approve", callback_data=f"approve:{confirmation_id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{confirmation_id}"),
-            ]
-        ])
-
-        await message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
-
-    async def _handle_confirmation_callback(self, update, context):
-        """Handle inline approve/reject callbacks."""
+    async def _handle_callback(self, update, context):
         query = update.callback_query
         await query.answer()
-
         if not await self._is_authorized(update):
-            await query.edit_message_text("⛔ Not authorized")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("⛔ Not authorized")
+            return
+        actor = self._actor(update)
+        kind, _, ident = (query.data or "").partition(":")
+        original = query.message.text_html if query.message else ""
+
+        if kind in ("approve", "reject"):
+            result = await self._run_in_thread(f"{kind} {ident}", actor)
+            icon = "✅" if result.get("success") else "❌"
+            output = result.get("result", result.get("error", "No output"))
+            await query.edit_message_text(f"{icon} {html.escape(str(output))[:3500]}\n— {html.escape(actor)}",
+                                          parse_mode="HTML")
             return
 
-        data = query.data or ""
-        try:
-            decision, confirmation_id = data.split(":", 1)
-        except ValueError:
-            await query.edit_message_text("❌ Invalid confirmation payload")
+        if kind == "oa":
+            self._audit(actor, "outreach_approve", {"outreach_id": ident})
+            result = await self._run_in_thread(f"approve outreach {ident}", actor)
+            if not result.get("success"):
+                await query.message.reply_text(f"❌ {result.get('error')}")
+                return
+            links = result.get("links") or {}
+            await query.edit_message_text(
+                f"{original}\n\n✅ Approved by {html.escape(actor)}"
+                + (f"\nDesk: <a href=\"{html.escape(links['desk'])}\">open WhatsApp Web</a>" if links.get("desk") else ""),
+                parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=self._keyboard(approved_buttons(ident, links)))
             return
 
-        command = f"approve {confirmation_id}" if decision == "approve" else f"reject {confirmation_id}"
-
-        if not self.bus:
-            await query.edit_message_text("❌ Engine not connected")
+        if kind == "os":
+            self._audit(actor, "outreach_mark_sent", {"outreach_id": ident})
+            result = await self._run_in_thread(f"sent {ident}", actor)
+            icon = "📤" if result.get("success") else "❌"
+            await query.edit_message_text(
+                f"{original}\n\n{icon} {html.escape(str(result.get('result') or result.get('error')))}",
+                parse_mode="HTML", disable_web_page_preview=True)
             return
 
-        msg = self.bus.send(
-            text=command,
-            source="telegram",
-            channel_id=str(update.effective_chat.id),
-            user=update.effective_user.first_name or "Telegram",
-            reply_to="telegram",
-        )
-        result = msg.result or {}
-        success = result.get("success", False)
-        output = result.get("result", result.get("error", "No output"))
-        icon = "✅" if success else "❌"
-        await query.edit_message_text(f"{icon} {output}")
+        if kind == "dnc":
+            self._audit(actor, "lead_dnc", {"lead_id": ident})
+            result = await self._run_in_thread(f"dnc {ident}", actor)
+            await query.edit_message_text(
+                f"{original}\n\n🚫 {html.escape(str(result.get('result') or result.get('error')))}",
+                parse_mode="HTML")

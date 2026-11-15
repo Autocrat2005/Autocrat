@@ -17,9 +17,9 @@ class ShellExecutorPlugin(NexusPlugin):
     def setup(self):
         self.default_timeout = 30
         self.register_command("run", self.run_command,
-                              "Run a shell command", "shell <command>", ["exec", "cmd", "shell"])
+                              "Run a shell command", "shell <command>", ["exec", "cmd", "shell"], side_effect="destructive")
         self.register_command("powershell", self.run_powershell,
-                              "Run a PowerShell command/script", "powershell <script>", ["ps"])
+                              "Run a PowerShell command/script", "powershell <script>", ["ps"], side_effect="destructive")
 
     def run_command(self, command: str = "", **kwargs):
         if not command:

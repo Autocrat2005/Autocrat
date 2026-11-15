@@ -1,0 +1,17 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Core-profile deps only: the suite never imports desktop plugins (pyautogui/pywin32).
+      - run: pip install pytest httpx fastapi uvicorn pyyaml websockets python-multipart pydantic
+      - run: python -m pytest -q

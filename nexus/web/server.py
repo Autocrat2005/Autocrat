@@ -1,15 +1,17 @@
 """
 Autocrat — FastAPI Web Server
 REST API + WebSocket for the control panel.
-Token-based auth protects command execution endpoints.
+Token-based auth (constant-time compare, fails closed) protects every
+endpoint that executes commands or exposes history. /ws/v2 authenticates
+with its first frame, never via the URL.
 Cross-channel: WebSocket clients can identify as "vscode" or "web" source.
 Message bus integration routes results between all channels.
 """
 
 import asyncio
+import hmac
 import json
 import os
-import secrets
 import tempfile
 import yaml
 from typing import Any, Dict, List, Optional, Set
@@ -19,7 +21,10 @@ from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from nexus.core.engine import NexusEngine
+from nexus.core.events import EventBus
 from nexus.core.logger import NexusLogger
+from nexus.core.secrets import auth_token, env_list
+from nexus.web.ws_v2 import handle_ws_v2, hub as ws_v2_hub
 
 app = FastAPI(title="Autocrat", version="2.0.0")
 engine: NexusEngine = None
@@ -31,12 +36,14 @@ message_bus = None
 heartbeat_ref = None
 whisper_model = None
 
-# CORS
+# CORS: explicit origins only (AUTOCRAT_CORS_ORIGINS), never "*".
+DEFAULT_CORS_ORIGINS = ["http://localhost:9000", "http://127.0.0.1:9000", "http://localhost:5173"]
+CORS_ORIGINS = [o for o in (env_list("AUTOCRAT_CORS_ORIGINS") or DEFAULT_CORS_ORIGINS) if o != "*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # Static files
@@ -84,21 +91,25 @@ def _load_whisper_model():
 
 
 def set_engine(eng: NexusEngine):
+    """Attach the engine. The auth token comes from AUTOCRAT_AUTH_TOKEN (.env);
+    if unset, one is generated into .env — protected endpoints are never open."""
     global engine, AUTH_TOKEN
     engine = eng
+    AUTH_TOKEN = auth_token()
 
-    # Load auth token from config
-    config_path = "nexus_config.yaml"
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            cfg = yaml.safe_load(f)
-        AUTH_TOKEN = cfg.get("auth", {}).get("token")
-        if not AUTH_TOKEN:
-            # Auto-generate on first run
-            AUTH_TOKEN = secrets.token_urlsafe(24)
-            cfg.setdefault("auth", {})["token"] = AUTH_TOKEN
-            with open(config_path, "w") as f:
-                yaml.dump(cfg, f, default_flow_style=False)
+
+def _token_ok(candidate: Optional[str]) -> bool:
+    expected = AUTH_TOKEN or auth_token()
+    if not candidate or not expected:
+        return False
+    return hmac.compare_digest(candidate.encode(), expected.encode())
+
+
+def _bearer(authorization: Optional[str]) -> str:
+    if not authorization:
+        return ""
+    value = authorization.strip()
+    return value[7:].strip() if value.lower().startswith("bearer ") else value
 
 
 def set_message_bus(bus):
@@ -151,16 +162,10 @@ async def _forward_bus_to_ws(msg, target_source: str):
 
 
 def verify_token(authorization: Optional[str] = Header(None)):
-    """Verify the Bearer token for protected endpoints."""
-    if not AUTH_TOKEN:
-        return  # No token configured = no auth
-
+    """Verify the Bearer token (constant-time). Fails closed."""
     if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization required. Send token to execute commands.")
-
-    # Accept "Bearer <token>" or raw token
-    token = authorization.replace("Bearer ", "").strip()
-    if token != AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="Authorization required")
+    if not _token_ok(_bearer(authorization)):
         raise HTTPException(status_code=401, detail="Invalid token")
 
 
@@ -206,8 +211,9 @@ async def get_plugins():
 
 
 @app.get("/api/history")
-async def get_history():
-    """Get command history."""
+async def get_history(authorization: Optional[str] = Header(None)):
+    """Get command history (PROTECTED — contains lead names and drafts)."""
+    verify_token(authorization)
     if not engine:
         return {"success": False, "error": "Engine not initialized"}
     return {"success": True, "result": engine.history[-100:]}
@@ -236,8 +242,9 @@ async def get_all_commands():
 
 
 @app.get("/api/suggestions")
-async def get_suggestions(q: str = ""):
-    """Get AI-powered command suggestions."""
+async def get_suggestions(q: str = "", authorization: Optional[str] = Header(None)):
+    """Get AI-powered command suggestions (PROTECTED — reveals recent commands)."""
+    verify_token(authorization)
     if not engine:
         return {"success": False, "error": "Engine not initialized"}
     suggestions = []
@@ -253,8 +260,9 @@ async def get_suggestions(q: str = ""):
 
 
 @app.get("/api/brain")
-async def get_brain_stats():
-    """Get AI brain and learning stats."""
+async def get_brain_stats(authorization: Optional[str] = Header(None)):
+    """Get AI brain and learning stats (PROTECTED — includes frequent commands)."""
+    verify_token(authorization)
     if not engine:
         return {"success": False, "error": "Engine not initialized"}
     return {
@@ -272,12 +280,9 @@ async def get_brain_stats():
 @app.post("/api/auth/verify")
 async def verify_auth(authorization: Optional[str] = Header(None)):
     """Check if a token is valid."""
-    if not AUTH_TOKEN:
-        return {"success": True, "message": "No auth configured"}
     if not authorization:
         return {"success": False, "message": "No token provided"}
-    token = authorization.replace("Bearer ", "").strip()
-    if token == AUTH_TOKEN:
+    if _token_ok(_bearer(authorization)):
         return {"success": True, "message": "Authenticated"}
     return {"success": False, "message": "Invalid token"}
 
@@ -297,7 +302,8 @@ async def execute_command(req: CommandRequest, authorization: Optional[str] = He
     # Run engine.execute in a threadpool to avoid blocking the async event loop
     # and to prevent Playwright sync_api from complaining about being in an asyncio loop
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, engine.execute, req.command)
+    EventBus().bind_loop(loop)
+    result = await loop.run_in_executor(None, lambda: engine.execute(req.command, actor="api"))
 
     await broadcast_ws({"type": "command_result", "data": {
         "command": req.command,
@@ -389,7 +395,8 @@ async def voice_command(
     resolved_cmd = engine.resolve_confirmation_phrase(transcription, confirmation_id=confirmation_id)
     final_command = resolved_cmd or transcription
 
-    result = engine.execute(final_command)
+    result = await asyncio.get_running_loop().run_in_executor(
+        None, lambda: engine.execute(final_command, actor="voice"))
 
     await broadcast_ws({
         "type": "voice_result",
@@ -437,10 +444,13 @@ async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(None),
     client_source = source or "web"
     ws_client_sources[ws] = client_source
 
-    # Check if this client is authenticated (via ?token= query param)
-    is_authed = (not AUTH_TOKEN) or (token == AUTH_TOKEN)
+    # Legacy panel authenticates via ?token= (kept for the old UI). New clients
+    # should use /ws/v2, which authenticates with the first frame instead.
+    is_authed = _token_ok(token)
 
     nexus_logger = NexusLogger()
+    ws_loop = asyncio.get_running_loop()
+    EventBus().bind_loop(ws_loop)
 
     async def send_log(entry):
         try:
@@ -449,10 +459,12 @@ async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(None),
             pass
 
     def log_callback(entry):
+        # Logs are emitted from any thread; hop onto this socket's loop safely.
+        if not is_authed:
+            return
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(send_log(entry))
-        except Exception:
+            ws_loop.call_soon_threadsafe(lambda: ws_loop.create_task(send_log(entry)))
+        except RuntimeError:
             pass
 
     nexus_logger.add_ws_listener(log_callback)
@@ -568,24 +580,27 @@ async def broadcast_ws(message: dict):
 # ─── Cross-Channel & Heartbeat Endpoints ──────────────────────────────────────
 
 @app.get("/api/bus/history")
-async def bus_history(limit: int = 50):
-    """Get message bus history (cross-channel commands)."""
+async def bus_history(limit: int = 50, authorization: Optional[str] = Header(None)):
+    """Get message bus history (PROTECTED)."""
+    verify_token(authorization)
     if not message_bus:
         return {"success": False, "error": "Message bus not active"}
     return {"success": True, "result": message_bus.get_history(limit)}
 
 
 @app.get("/api/bus/stats")
-async def bus_stats():
-    """Get message bus channel stats."""
+async def bus_stats(authorization: Optional[str] = Header(None)):
+    """Get message bus channel stats (PROTECTED)."""
+    verify_token(authorization)
     if not message_bus:
         return {"success": False, "error": "Message bus not active"}
     return {"success": True, "result": message_bus.get_stats()}
 
 
 @app.get("/api/heartbeat")
-async def heartbeat_status():
-    """Get heartbeat task status."""
+async def heartbeat_status(authorization: Optional[str] = Header(None)):
+    """Get heartbeat task status (PROTECTED)."""
+    verify_token(authorization)
     if not heartbeat_ref:
         return {"success": False, "error": "Heartbeat not active"}
     return {"success": True, "result": heartbeat_ref.get_status()}
@@ -606,3 +621,52 @@ async def add_heartbeat_task(
         return {"success": False, "error": "name and command are required"}
     task = heartbeat_ref.add_task(name, command, interval_minutes=interval_minutes)
     return {"success": True, "result": f"Task '{name}' scheduled every {interval_minutes} min"}
+
+
+# ─── v2: typed event stream + control plane ───────────────────────────────────
+
+@app.websocket("/ws/v2")
+async def websocket_v2(ws: WebSocket):
+    """Authenticated event stream for the HUD and desk↔core link (first-frame auth)."""
+    await handle_ws_v2(ws, expected_token=AUTH_TOKEN or auth_token(), get_engine=lambda: engine)
+
+
+class ControlRequest(BaseModel):
+    action: str            # kill | resume | run_mode
+    mode: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@app.get("/api/v2/control")
+async def control_status(authorization: Optional[str] = Header(None)):
+    """Run mode, kill switch, LLM budget and live client count (PROTECTED)."""
+    verify_token(authorization)
+    if not engine:
+        return {"success": False, "error": "Engine not initialized"}
+    status = {**engine.runtime.status(), "profile": getattr(engine, "profile", "full"),
+              "ws_v2_clients": ws_v2_hub.client_count}
+    try:
+        from nexus.core.llm_router import get_router
+        status["llm_budget"] = get_router().budget_status()
+    except Exception as e:
+        status["llm_budget"] = {"error": str(e)}
+    return {"success": True, "result": status}
+
+
+@app.post("/api/v2/control")
+async def control_action(req: ControlRequest, authorization: Optional[str] = Header(None)):
+    """Kill switch / resume / run mode. Re-arming outbound goes through the approval gate."""
+    verify_token(authorization)
+    if not engine:
+        return {"success": False, "error": "Engine not initialized"}
+    if req.action == "kill":
+        command = "kill switch"
+    elif req.action == "resume":
+        command = "resume"
+    elif req.action == "run_mode" and req.mode in ("dry_run", "live"):
+        command = f"run mode {req.mode}"
+    else:
+        raise HTTPException(status_code=400, detail="action must be kill | resume | run_mode (mode=dry_run|live)")
+    loop = asyncio.get_running_loop()
+    EventBus().bind_loop(loop)
+    return await loop.run_in_executor(None, lambda: engine.execute(command, actor="api:control"))

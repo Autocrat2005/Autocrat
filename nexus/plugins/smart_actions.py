@@ -18,6 +18,11 @@ log = get_logger("smart_actions")
 # Safety: don't let pyautogui move too fast
 pyautogui.PAUSE = 0.15
 
+# NOT A SECRET. This is YouTube's public InnerTube web-client key: it ships in
+# youtube.com's own JavaScript and is identical for every visitor. It is not
+# tied to any Autocrat account. Labelled so secret scanners can allowlist it.
+YOUTUBE_INNERTUBE_PUBLIC_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"  # gitleaks:allow
+
 
 class SmartActionsPlugin(NexusPlugin):
     """Smart actions — high-level automation using keyboard shortcuts."""
@@ -148,7 +153,7 @@ class SmartActionsPlugin(NexusPlugin):
                 "query": query,
             }
             resp = httpx.post(
-                "https://www.youtube.com/youtubei/v1/search?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
+                f"https://www.youtube.com/youtubei/v1/search?key={YOUTUBE_INNERTUBE_PUBLIC_KEY}",
                 json=payload,
                 headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
                 timeout=15,

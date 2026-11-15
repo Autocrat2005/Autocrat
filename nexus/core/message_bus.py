@@ -111,7 +111,7 @@ class MessageBus:
         # Execute
         if self._engine:
             try:
-                msg.result = self._engine.execute(text)
+                msg.result = self._engine.execute(text, actor=f"{source}:{user or 'unknown'}")
             except Exception as e:
                 msg.result = {"success": False, "error": str(e)}
         else:

@@ -52,7 +52,7 @@ class FileOpsPlugin(NexusPlugin):
         self.register_command("copy", self.copy_file,
                               "Copy a file or directory", "copy <src> to <dst>", ["cp"])
         self.register_command("delete", self.delete_file,
-                              "Delete a file or directory", "delete <path>", ["rm", "remove"])
+                              "Delete a file or directory", "delete <path>", ["rm", "remove"], side_effect="destructive")
         self.register_command("organize", self.organize_dir,
                               "Auto-sort files by extension", "organize <dir>")
         self.register_command("watch", self.watch_dir,
