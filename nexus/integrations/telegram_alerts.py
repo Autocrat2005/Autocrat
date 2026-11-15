@@ -59,6 +59,13 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
         text = str(data.get("text") or "")
         return {"priority": "orange", "buttons": [], "text": html.escape(text)} if text else None
 
+    if event == "payment.received":
+        lead = store.get_lead(data.get("lead_id")) if (store and data.get("lead_id")) else None
+        who = (lead or {}).get("company") or (lead or {}).get("name") or data.get("lead_id", "?")
+        return {"priority": "red", "buttons": [],
+                "text": f"💰 <b>{html.escape(str(data.get('currency', 'USD')))} {float(data.get('amount') or 0):,.2f}</b> "
+                        f"{html.escape(str(data.get('kind', 'deposit')))} from {html.escape(str(who))}"}
+
     if event not in ("lead.transition", "lead.signal"):
         return None
 

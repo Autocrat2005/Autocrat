@@ -14,6 +14,13 @@ Inbound
     for the next message, and replies in the same thread (RUN_MODE=live) or alerts you
     with the draft (dry_run). Hot intents ping you on Telegram/WhatsApp.
 
+Growth (all automatic, all inside the same daily cap)
+  * Follow-ups: no reply EMAIL_FOLLOWUP_DAYS after the opener (default 3, then 4 more) → a short,
+    new-angle bump in the SAME thread; at most two; any reply, "no" or bounce stops them.
+  * Bounces: mailer-daemon reports are matched to the lead → contact suppressed, lead LOST.
+  * Warm-up: the cap starts at EMAIL_DAILY_CAP and rises EMAIL_CAP_STEP per clean sending day
+    (sent mail, zero bounces) up to EMAIL_CAP_MAX; a 7-day bounce rate over 5% drops it back.
+
 Nothing runs while the kill switch is engaged. Settings: EMAIL_* in .env.
 """
 
@@ -67,6 +74,40 @@ def needs_postal(market: str) -> bool:
     """US (CAN-SPAM) and Canada (CASL) require the sender's postal address in commercial email."""
     key = (market or "").strip().lower()
     return any(key == m or key.startswith(m + " ") or m in key.split(", ") for m in POSTAL_MARKETS)
+
+
+BOUNCE_SENDERS = ("mailer-daemon", "postmaster", "mail-daemon", "mailerdaemon")
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def is_bounce_sender(addr: str) -> bool:
+    local = (addr or "").split("@")[0].lower()
+    return any(local.startswith(b) for b in BOUNCE_SENDERS)
+
+
+def compute_cap(store, base: int, cap_max: int = 40, step: int = 3,
+            now_ts: Optional[float] = None) -> Dict[str, Any]:
+    """Today's cap: base + step per clean sending day (last 14), back to base if bounces spike."""
+    now_ts = now_ts or time.time()
+    c = store._conn()
+    sends = {r[0]: r[1] for r in c.execute(
+        "SELECT CAST((? - sent_at) / 86400 AS INTEGER), COUNT(*) FROM outreach WHERE channel='email'"
+        " AND status='sent' AND sent_at >= ? GROUP BY 1", (now_ts, now_ts - 14 * 86400))}
+    bounces = {r[0]: r[1] for r in c.execute(
+        "SELECT CAST((? - ts) / 86400 AS INTEGER), COUNT(*) FROM lead_events WHERE type='bounce'"
+        " AND ts >= ? GROUP BY 1", (now_ts, now_ts - 14 * 86400))}
+    min_day = max(3, base // 4)
+    clean = sum(1 for d, n in sends.items() if d >= 1 and n >= min_day and not bounces.get(d))
+    s7 = sum(n for d, n in sends.items() if d < 7)
+    b7 = sum(n for d, n in bounces.items() if d < 7)
+    rate = (b7 / s7) if s7 else 0.0
+    if s7 >= 10 and rate > 0.05:
+        cap, why = base, f"held at base: {rate:.0%} bounces in 7 days"
+    else:
+        cap = min(cap_max, base + step * clean)
+        why = f"{clean} clean day(s) → +{step * clean}" if clean else "warming up"
+    return {"cap": max(1, cap), "base": base, "max": cap_max, "clean_days": clean,
+            "sent_7d": s7, "bounces_7d": b7, "bounce_rate": round(rate, 4), "note": why}
 
 
 QUOTE_MARKERS = [re.compile(p, re.I | re.M) for p in (
@@ -180,8 +221,10 @@ class EmailTransport:
                             body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "replace")
                             break
                 else:
-                    body = msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8", "replace")
-                out.append({"uid": uid.decode(), "from": parseaddr(msg.get("From", ""))[1].lower(),
+                    body = (msg.get_payload(decode=True) or b"").decode(msg.get_content_charset() or "utf-8", "replace")
+                dsn = " ".join(str(part) for part in msg.walk()
+                               if part.get_content_type() in ("message/delivery-status", "text/rfc822-headers"))
+                out.append({"dsn": dsn[:4000], "uid": uid.decode(), "from": parseaddr(msg.get("From", ""))[1].lower(),
                             "subject": msg.get("Subject", ""), "message_id": msg.get("Message-ID", ""),
                             "references": msg.get("References", ""), "body": body})
         return out
@@ -208,6 +251,11 @@ class EmailWorker:
         self.optout = get_secret("EMAIL_OPTOUT_LINE", "p.s. if this isn't relevant, just reply 'no' and i won't email again")
         self.signature = get_secret("EMAIL_SIGNATURE", "Yash")
         self.postal = (get_secret("EMAIL_POSTAL_ADDRESS", "") or "").strip()
+        self.cap_max = int(get_secret("EMAIL_CAP_MAX", "40") or 40)
+        self.cap_step = int(get_secret("EMAIL_CAP_STEP", "3") or 3)
+        self.followups_on = (get_secret("EMAIL_FOLLOWUPS", "1") or "1").lower() in ("1", "true", "yes")
+        self.followup_days = [float(x) for x in (get_secret("EMAIL_FOLLOWUP_DAYS", "3,4") or "3,4").split(",") if x.strip()]
+        self.max_followup_drafts = int(get_secret("EMAIL_FOLLOWUP_DRAFTS_PER_TICK", "6") or 6)
         self._postal_warned = False
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -239,7 +287,92 @@ class EmailWorker:
     def tick(self, now: Optional[datetime] = None) -> Dict[str, int]:
         if RuntimeControl().killed:
             return {"sent": 0, "replied": 0}
-        return {"sent": self.send_openers(now), "replied": self.handle_replies()}
+        staged = 0
+        if self.followups_on:
+            try:
+                staged = self.stage_followups()
+            except Exception as e:
+                log.warning(f"Follow-up staging failed: {e}")
+        return {"followups_staged": staged, "sent": self.send_openers(now), "replied": self.handle_replies()}
+
+    # ── warm-up cap ──────────────────────────────────────────────
+
+    def cap_status(self, now_ts: Optional[float] = None) -> Dict[str, Any]:
+        return compute_cap(self.store, self.daily_cap, self.cap_max, self.cap_step, now_ts)
+
+    # ── follow-ups ───────────────────────────────────────────────
+
+    def _thread_of(self, lead_id: str) -> Dict[str, str]:
+        """The opener's subject + Message-ID, so follow-ups land in the same thread."""
+        first, last_id = {}, ""
+        for e in self.store.lead_events(lead_id):
+            payload = e.get("payload") or {}
+            if e["type"] == "message_out" and payload.get("channel") == "email":
+                if not first:
+                    first = payload
+                last_id = payload.get("message_id") or last_id
+        return {"subject": first.get("subject", ""), "message_id": first.get("message_id", ""),
+                "last_id": last_id, "text": first.get("text", "")}
+
+    def _quiet(self, lead: Dict[str, Any]) -> bool:
+        """Still waiting on them: contacted, no reply, not closed."""
+        if not lead or lead["state"] not in ("SENT", "OPENED"):
+            return False
+        return not any(e["type"] in ("message_in", "bounce") for e in self.store.lead_events(lead["id"]))
+
+    def draft_followup(self, lead: Dict[str, Any], n: int, opener: str) -> str:
+        from nexus.integrations.whatsapp_closer import humanize
+        voice = getattr(self.closer, "voice", "") or ""
+        system = (
+            f"Write follow-up #{n} of 2 from Yash in an email thread. They got the message below and didn't reply.\n"
+            "Rules: 1-2 short sentences, lowercase and casual like Yash's voice, no greeting line needed.\n"
+            + ("#1: add ONE new, specific, useful angle tied to their product (a quick free look at one thing, "
+               "or a concrete example of what usually breaks), then an easy yes/no question.\n" if n == 1 else
+               "#2: a polite last note that you'll stop here, leave the door open, no guilt, no pressure.\n")
+            + "Never repeat the first message, never use placeholders like [name], never use em or en dashes, "
+              "never claim clients or results. Return ONLY JSON: {\"draft\": \"...\"}\n\n"
+              f"Yash's voice:\n{voice[:2500]}")
+        who = f"{lead.get('name') or ''} at {lead.get('company') or ''}".strip()
+        result = self.closer.router.complete(f"To: {who}\nTheir first message from us:\n{opener[:1500]}",
+                                             task="copy", system=system, json_mode=True, max_tokens=500,
+                                             lead_id=lead["id"])
+        data = result.data if isinstance(result.data, dict) else {}
+        return humanize(str(data.get("draft") or "")).strip()
+
+    def stage_followups(self, now_ts: Optional[float] = None) -> int:
+        """Draft the due follow-ups (they then send through the normal queue, threaded)."""
+        from nexus.core.store import AlreadyContacted, Suppressed
+        now_ts = now_ts or time.time()
+        c = self.store._conn()
+        staged = 0
+        steps = [("first_touch", "followup_1"), ("followup_1", "followup_2")][:len(self.followup_days)]
+        for (prev, kind), days in zip(steps, self.followup_days):
+            rows = c.execute(
+                "SELECT o.lead_id FROM outreach o WHERE o.channel='email' AND o.kind=? AND o.status='sent'"
+                " AND o.sent_at <= ? AND NOT EXISTS (SELECT 1 FROM outreach f WHERE f.lead_id=o.lead_id AND f.kind=?)"
+                " ORDER BY o.sent_at LIMIT 50", (prev, now_ts - days * 86400, kind)).fetchall()
+            for r in rows:
+                if staged >= self.max_followup_drafts:
+                    return staged
+                lead = self.store.get_lead(r[0])
+                if not self._quiet(lead):
+                    continue
+                thread = self._thread_of(lead["id"])
+                if not thread["message_id"]:
+                    continue
+                try:
+                    draft = self.draft_followup(lead, 1 if kind == "followup_1" else 2, thread["text"])
+                except Exception as e:
+                    log.warning(f"Follow-up draft for {lead['id']} failed: {e}")
+                    return staged
+                if not draft or PLACEHOLDER_RE.search(draft):
+                    continue
+                try:
+                    self.store.stage_outreach(lead["id"], "email", draft, kind=kind, actor="followup")
+                    staged += 1
+                except (AlreadyContacted, Suppressed, ValueError) as e:
+                    log.info(f"Not staging {kind} for {lead['id']}: {e}")
+        return staged
 
     # ── outbound ─────────────────────────────────────────────────
 
@@ -259,9 +392,11 @@ class EmailWorker:
         queue = self.store.list_outreach("approved", channel="email")
         if self.auto_send:
             queue += self.store.list_outreach("staged", channel="email")
+        queue.sort(key=lambda o: 0 if (o.get("kind") or "").startswith("followup") else 1)  # warm threads first
+        cap = self.cap_status()["cap"]
         sent = 0
         for out in queue:
-            if sent_today + sent >= self.daily_cap:
+            if sent_today + sent >= cap:
                 break
             lead = self.store.get_lead(out["lead_id"])
             to = (lead or {}).get("contact") or ""
@@ -280,7 +415,20 @@ class EmailWorker:
                     log.warning("Email: US/Canada openers held until EMAIL_POSTAL_ADDRESS is set (CAN-SPAM/CASL)")
                     self._postal_warned = True
                 continue
-            subject, body = split_subject(out["draft"])
+            followup = (out.get("kind") or "").startswith("followup")
+            in_reply_to = references = ""
+            if followup:
+                if not self._quiet(lead):   # they replied, said no or bounced since: never bump them
+                    try:
+                        self.store.reject_outreach(out["id"], actor="email-auto", reason="lead no longer quiet")
+                    except Exception:
+                        pass
+                    continue
+                thread = self._thread_of(lead["id"])
+                subject = thread["subject"] if thread["subject"].lower().startswith("re:") else f"Re: {thread['subject']}"
+                body, in_reply_to, references = out["draft"].strip(), thread["last_id"], thread["message_id"]
+            else:
+                subject, body = split_subject(out["draft"])
             body = f"{body}\n\n{self.signature}\n\n{self.optout}"
             if self.postal:  # CAN-SPAM (US) wants a physical postal address on commercial email
                 body = f"{body}\n{self.postal}"
@@ -291,17 +439,17 @@ class EmailWorker:
                     self.store.approve_outreach(out["id"], actor="email-auto")
                     if lead["state"] == "STAGED":
                         self.store.transition(lead["id"], "APPROVED", actor="email-auto")
-                msg_id = self.transport.send(to, subject, body)
+                msg_id = self.transport.send(to, subject, body, in_reply_to=in_reply_to, references=references)
                 self.store.mark_outreach_sent(out["id"], actor="email")
             except Exception as e:
                 log.warning(f"Email opener to lead {lead['id']} failed: {e}")
                 continue
-            self.store.log_event(lead["id"], "message_out", {"text": body, "subject": subject,
+            self.store.log_event(lead["id"], "message_out", {"text": body, "subject": subject, "kind": out.get("kind"),
                                                              "message_id": msg_id, "channel": "email"}, actor="email")
             sent += 1
         if sent:
             self.store.kv_set(day_key, str(sent_today + sent))
-            self.alerts.notify(f"📧 Sent {sent} email opener(s) ({sent_today + sent}/{self.daily_cap} today)", "orange")
+            self.alerts.notify(f"📧 Sent {sent} email(s) ({sent_today + sent}/{cap} today)", "orange")
         return sent
 
     # ── inbound ──────────────────────────────────────────────────
@@ -317,10 +465,45 @@ class EmailWorker:
         lines.append(f"Them: {latest}")
         return "\n\n".join(lines[-12:])
 
+    def handle_bounce(self, mail: Dict[str, Any]) -> bool:
+        """Match a delivery failure to the lead we emailed; never write to that address again."""
+        own = (getattr(self.transport, "address", "") or "").lower()
+        text = f"{mail.get('dsn', '')}\n{mail.get('body', '')}"
+        for addr in dict.fromkeys(a.lower().strip(".") for a in EMAIL_RE.findall(text)):
+            if addr == own or is_bounce_sender(addr):
+                continue
+            key = contact_key("email", addr)
+            lead = self.store.find_lead_by_contact(key)
+            if not lead or not any(o["status"] == "sent" for o in self.store.outreach_for_lead(lead["id"])):
+                continue
+            self.store.suppress(key, "bounced")
+            self.store.log_event(lead["id"], "bounce", {"address": addr, "subject": mail.get("subject", "")[:200]},
+                                 actor="email")
+            if lead["state"] in ("SENT", "OPENED"):
+                try:
+                    self.store.transition(lead["id"], "LOST", actor="email", reason="bounced")
+                except Exception as e:
+                    log.info(f"bounce: no state change for {lead['id']}: {e}")
+            for o in self.store.outreach_for_lead(lead["id"]):
+                if o["status"] in ("staged", "approved"):
+                    try:
+                        self.store.reject_outreach(o["id"], actor="email", reason="bounced")
+                    except Exception:
+                        pass
+            log.info(f"📭 Bounce: {addr} suppressed")
+            return True
+        return False
+
     def handle_replies(self) -> int:
         handled = 0
-        known = lambda addr: self.store.find_lead_by_contact(contact_key("email", addr)) is not None  # noqa: E731
+        known = lambda addr: is_bounce_sender(addr) or \
+            self.store.find_lead_by_contact(contact_key("email", addr)) is not None  # noqa: E731
         for mail in self.transport.fetch_unseen(wanted=known):
+            if is_bounce_sender(mail["from"]):
+                if self.handle_bounce(mail):
+                    self.transport.mark_seen(mail["uid"])
+                    handled += 1
+                continue   # a bounce we can't match stays unread for you
             lead = self.store.find_lead_by_contact(contact_key("email", mail["from"]))
             if not lead:
                 continue  # not someone we're talking to: leave it unread for you

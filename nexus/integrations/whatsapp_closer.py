@@ -310,12 +310,14 @@ class WhatsAppCloser:
             "intent": intent,
             "hot": bool(data.get("hot")) or intent in HOT_INTENTS,
             "summary": str(data.get("summary") or "")[:300],
+            "channel": channel,
         }
 
     def apply_outcome(self, lead: Dict[str, Any], incoming: str, decision: Dict[str, Any]) -> None:
         """Update lead state + alert founders. Called whether or not we send."""
         lead_id = lead["id"]
-        self.store.log_event(lead_id, "message_in", {"text": incoming[:2000]}, actor="prospect")
+        self.store.log_event(lead_id, "message_in", {"text": incoming[:2000], "intent": decision.get("intent"),
+                                                     "hot": bool(decision.get("hot"))}, actor="prospect")
         state = LeadState(lead["state"])
         if state in ENGAGEMENT_RANK and ENGAGEMENT_RANK[state] < ENGAGEMENT_RANK[LeadState.REPLIED]:
             self.store.transition(lead_id, "REPLIED", actor="closer")
@@ -326,7 +328,8 @@ class WhatsAppCloser:
                 log.warning(f"DNC transition failed for {lead_id}: {e}")
         if decision["hot"]:
             name = lead.get("name") or lead.get("contact")
-            self.notifier.notify(f"🔴 Hot on WhatsApp: *{name}* ({decision['intent']})\n{decision['summary']}",
+            where = "email" if decision.get("channel") == "email" else "WhatsApp"
+            self.notifier.notify(f"🔴 Hot on {where}: *{name}* ({decision['intent']})\n{decision['summary']}",
                                  priority="red")
 
     # ── the poll (runs on the WhatsApp Web thread) ───────────────

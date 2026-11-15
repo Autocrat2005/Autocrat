@@ -80,7 +80,7 @@ def build_snapshot(engine) -> Dict[str, Any]:
     queue = []
     auto_email = str(get_secret("EMAIL_AUTO_SEND", "0")).strip() in ("1", "true", "yes")
     for r in c.execute(
-            "SELECT o.id, o.lead_id, o.channel, o.draft, o.status, o.created_at, l.name, l.company, l.source,"
+            "SELECT o.id, o.lead_id, o.channel, o.kind, o.draft, o.status, o.created_at, l.name, l.company, l.source,"
             " l.market, l.contact, l.url FROM outreach o JOIN leads l ON l.id = o.lead_id"
             " WHERE o.status IN ('staged','approved') ORDER BY o.created_at DESC LIMIT 60"):
         row = dict(r)
@@ -155,11 +155,66 @@ def build_snapshot(engine) -> Dict[str, Any]:
         ideas = parse_opportunities(store.kv_get("opportunity:last_report") or "")
     last_scout = store.kv_get("opportunity:last_run")
 
+    # ── money: attribution by source (which radar actually pays)
+    by_source: Dict[str, Dict[str, Any]] = {}
+    for r in c.execute("SELECT source, COUNT(*) FROM leads GROUP BY source"):
+        by_source[r[0]] = {"source": r[0], "found": r[1], "contacted": 0, "replied": 0, "hot": 0,
+                           "paid_usd": 0.0, "won": 0}
+    for r in c.execute("SELECT l.source, COUNT(DISTINCT o.lead_id) FROM outreach o JOIN leads l ON l.id=o.lead_id"
+                       " WHERE o.status='sent' GROUP BY l.source"):
+        by_source.setdefault(r[0], {"source": r[0], "found": 0})["contacted"] = r[1]
+    for r in c.execute("SELECT l.source, COUNT(DISTINCT e.lead_id),"
+                       " COUNT(DISTINCT CASE WHEN json_extract(e.payload,'$.hot') THEN e.lead_id END)"
+                       " FROM lead_events e JOIN leads l ON l.id=e.lead_id WHERE e.type='message_in' GROUP BY l.source"):
+        by_source[r[0]]["replied"], by_source[r[0]]["hot"] = r[1], r[2]
+    paid_total: Dict[str, float] = {}
+    for r in c.execute("SELECT l.source, p.currency, SUM(p.amount) FROM payments p JOIN leads l ON l.id=p.lead_id"
+                       " GROUP BY l.source, p.currency"):
+        paid_total[r[1]] = paid_total.get(r[1], 0.0) + float(r[2] or 0)
+        if r[1] == "USD":
+            by_source[r[0]]["paid_usd"] = round(float(r[2] or 0), 2)
+    for r in c.execute("SELECT source, COUNT(*) FROM leads WHERE state='WON' GROUP BY source"):
+        by_source[r[0]]["won"] = r[1]
+    attribution = sorted((dict({"contacted": 0, "replied": 0, "hot": 0, "paid_usd": 0.0, "won": 0}, **v)
+                          for v in by_source.values()),
+                         key=lambda x: (-x["paid_usd"], -x["hot"], -x["replied"], -x["contacted"], -x["found"]))
+
+    # ── replies that need a human (or a deposit link)
+    replies = []
+    for r in c.execute(
+            "SELECT l.id, l.company, l.name, l.source, l.state, l.contact, e.ts, e.payload FROM leads l"
+            " JOIN lead_events e ON e.id = (SELECT MAX(id) FROM lead_events WHERE lead_id=l.id AND type='message_in')"
+            " WHERE l.state NOT IN ('DNC','ARCHIVED','LOST') ORDER BY e.ts DESC LIMIT 25"):
+        try:
+            p = json.loads(r["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            p = {}
+        paid = c.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE lead_id=?", (r["id"],)).fetchone()[0]
+        replies.append({"lead_id": r["id"], "company": r["company"], "name": r["name"], "source": r["source"],
+                        "state": r["state"], "contact": r["contact"], "age": _ago(r["ts"]), "paid": paid,
+                        "text": (p.get("text") or "")[:400], "intent": p.get("intent") or "", "hot": bool(p.get("hot"))})
+
+    followups = {k: v for k, v in c.execute(
+        "SELECT status, COUNT(*) FROM outreach WHERE kind LIKE 'followup%' GROUP BY status")}
+    try:
+        from nexus.integrations.email_channel import compute_cap
+        cap = compute_cap(store, int(get_secret("EMAIL_DAILY_CAP", "20") or 20),
+                          int(get_secret("EMAIL_CAP_MAX", "40") or 40), int(get_secret("EMAIL_CAP_STEP", "3") or 3))
+    except Exception as e:
+        cap = {"cap": int(get_secret("EMAIL_DAILY_CAP", "20") or 20), "note": str(e)}
+
     rt = engine.runtime.status()
     return {
+        "attribution": attribution,
+        "revenue": {"paid": {k: round(v, 2) for k, v in paid_total.items()}, "won": reached.get("WON", 0),
+                    "deposits": reached.get("DEPOSIT_OPENED", 0)},
+        "replies": replies,
+        "followups": {"staged": followups.get("staged", 0) + followups.get("approved", 0),
+                      "sent": followups.get("sent", 0)},
+        "cap": cap,
         "ts": now,
         "control": {**rt, "profile": getattr(engine, "profile", "full")},
-        "today": {"sent": sent_today, "cap": int(get_secret("EMAIL_DAILY_CAP", "20") or 20),
+        "today": {"sent": sent_today, "cap": int(cap.get("cap") or 20),
                   "found": found_today, "llm_usd": round(spend_today.get("cost_usd", 0.0), 4),
                   "llm_calls": spend_today.get("calls", 0)},
         "funnel": funnel,
@@ -196,6 +251,16 @@ def do_action(engine, action: str, ident: str = "", text: str = "", actor: str =
             return {"success": False, "error": "scout_radar plugin not loaded"}
         store.audit(actor, "radar_run", {"source": ident})
         return {"success": True, "result": radar.run_source(ident)}
+    if action == "payment":
+        # text: "<amount> [currency] [deposit|final]", e.g. "625 USD deposit"
+        parts = (text or "").replace("$", "").replace(",", "").split()
+        if not parts:
+            return {"success": False, "error": "amount needed, e.g. 625 USD deposit"}
+        amount = float(parts[0])
+        currency = next((p.upper() for p in parts[1:] if len(p) == 3 and p.isalpha()), "USD")
+        kind = "final" if any(p.lower() in ("final", "won", "full") for p in parts[1:]) else "deposit"
+        pay = store.record_payment(ident, amount, currency=currency, kind=kind, actor=actor)
+        return {"success": True, "result": f"{pay['currency']} {pay['amount']:,.2f} {pay['kind']} recorded."}
     if action == "opportunities":
         return engine.execute("opportunities", actor=actor)
     return {"success": False, "error": f"unknown action '{action}'"}

@@ -145,6 +145,20 @@ MIGRATIONS: List[str] = [
         detail TEXT NOT NULL DEFAULT '{}'
     );
     """,
+    # v2: money in, so every source and opener can be judged by cash, not replies
+    """
+    CREATE TABLE IF NOT EXISTS payments (
+        id TEXT PRIMARY KEY,
+        lead_id TEXT NOT NULL REFERENCES leads(id),
+        ts REAL NOT NULL,
+        amount REAL NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        kind TEXT NOT NULL DEFAULT 'deposit',
+        note TEXT,
+        actor TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_payments_lead ON payments(lead_id);
+    """,
 ]
 
 
@@ -564,6 +578,42 @@ class Store:
             c.execute("INSERT INTO artifacts(id, lead_id, kind, uri, meta, created_at) VALUES(?,?,?,?,?,?)",
                       (aid, lead_id, kind, uri, json.dumps(meta or {}, default=str), _now()))
         return aid
+
+    # ── Payments (deposits and final payments) ───────────────────
+
+    def record_payment(self, lead_id: str, amount: float, *, currency: str = "USD", kind: str = "deposit",
+                       note: str = "", actor: str = "system") -> Dict[str, Any]:
+        """Money received. deposit → DEPOSIT_OPENED, final → WON (the lead moves as far as it legally can)."""
+        lead = self.get_lead(lead_id)
+        if not lead:
+            raise KeyError(f"Unknown lead {lead_id}")
+        amount = float(amount)
+        if amount <= 0:
+            raise ValueError("amount must be positive")
+        kind = "final" if kind in ("final", "won", "full", "balance") else "deposit"
+        pid = _new_id()
+        with self.transaction() as c:
+            c.execute("INSERT INTO payments(id, lead_id, ts, amount, currency, kind, note, actor) VALUES(?,?,?,?,?,?,?,?)",
+                      (pid, lead_id, _now(), amount, (currency or "USD").upper()[:6], kind, note[:300], actor))
+        self.audit(actor, "payment", {"lead_id": lead_id, "amount": amount, "currency": currency, "kind": kind})
+        targets = [LeadState.DEPOSIT_OPENED.value] + ([LeadState.WON.value] if kind == "final" else [])
+        for target in targets:
+            current = self.get_lead(lead_id)["state"]
+            if current in (LeadState.WON.value, LeadState.DNC.value) or current == target:
+                continue
+            try:
+                self.transition(lead_id, target, actor=actor, payload={"payment_id": pid, "amount": amount})
+            except Exception as e:  # e.g. a lead that was never contacted: money still counts
+                log.info(f"payment on {lead_id}: no state change to {target} ({e})")
+        self._events.emit("payment.received", {"lead_id": lead_id, "amount": amount, "currency": currency,
+                                               "kind": kind, "actor": actor})
+        return {"id": pid, "lead_id": lead_id, "amount": amount, "currency": currency, "kind": kind}
+
+    def payments(self, lead_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        sql, params = "SELECT * FROM payments", ()
+        if lead_id:
+            sql, params = sql + " WHERE lead_id=?", (lead_id,)
+        return [_row(r) for r in self._conn().execute(sql + " ORDER BY ts DESC", params).fetchall()]
 
     # ── Budget ledger ────────────────────────────────────────────
 

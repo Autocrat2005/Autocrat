@@ -57,7 +57,7 @@ class TelegramBot:
 
         if self.bus:
             self.bus.register_channel("telegram", self._receive_bus_message)
-        for pattern in ("lead.*", "control.*", "report.*"):
+        for pattern in ("lead.*", "control.*", "report.*", "payment.*"):
             self.events.on(pattern, self._on_event)
 
     # ── helpers ──────────────────────────────────────────────────

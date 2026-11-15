@@ -168,3 +168,90 @@ def test_each_lead_gets_its_own_business_hours(store):
     # 15:00 UTC = 19:00 Dubai (closed) and 10:00 New York (open): only the US lead goes out
     assert w.send_openers(at) == 1
     assert t.sent[0]["to"] == "joe@startup.com" and t.sent[0]["body"].endswith("1 Example St, Pune, India")
+
+
+# ── growth: warm-up cap, bounces, follow-ups ──────────────────────
+
+def sent_opener(store, w, t, email="joe@startup.com", key="g1", days_ago=0.0):
+    """Stage + send one opener through the worker, then age it."""
+    import time as _t
+    lead, out = staged_email_lead(store, email=email, key=key)
+    store.update_lead_fields(lead["id"], market="UAE")
+    assert w.send_openers(IN_HOURS) >= 1
+    if days_ago:
+        with store.transaction() as c:
+            c.execute("UPDATE outreach SET sent_at=? WHERE id=?", (_t.time() - days_ago * 86400, out["id"]))
+    return store.get_lead(lead["id"]), out
+
+
+def test_cap_ramps_with_clean_days_and_drops_on_bounces(store):
+    import time as _t
+    w = make_worker(store, FakeTransport(), cap=20)
+    w.cap_max, w.cap_step = 40, 3
+    assert w.cap_status()["cap"] == 20
+    now = _t.time()
+    with store.transaction() as c:   # 4 past days with 6 clean sends each
+        for d in range(1, 5):
+            for i in range(6):
+                lead_id = f"L{d}{i}"
+                c.execute("INSERT INTO leads(id, dedupe_key, source, state, created_at, updated_at) VALUES(?,?,?,?,?,?)",
+                          (lead_id, lead_id, "t", "SENT", now, now))
+                c.execute("INSERT INTO outreach(id, lead_id, channel, kind, contact_key, idempotency_key, draft, status,"
+                          " created_at, sent_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                          (lead_id, lead_id, "email", "first_touch", f"email:{lead_id}@x.com", lead_id, "x", "sent",
+                           now, now - d * 86400 - 60))
+    st = w.cap_status()
+    assert st["clean_days"] == 4 and st["cap"] == 32
+    for i in range(3):   # 3 bounces in the last week on 24 sends = 12.5% → back to base
+        store.log_event(f"L1{i}", "bounce", {"address": "x"})
+    assert w.cap_status()["cap"] == 20
+
+
+def test_bounce_suppresses_and_stops_followups(store):
+    RuntimeControl().set_run_mode("live", actor="test")
+    t = FakeTransport()
+    w = make_worker(store, t)
+    lead, _ = sent_opener(store, w, t)
+    bounce = {"uid": "9", "from": "mailer-daemon@zoho.in", "subject": "Undelivered Mail Returned to Sender",
+              "message_id": "", "references": "", "body": "Delivery to joe@startup.com failed permanently.",
+              "dsn": "Final-Recipient: rfc822; joe@startup.com"}
+    t.inbox = [bounce]
+    w.handle_replies()
+    assert store.is_suppressed("email:joe@startup.com") and store.get_lead(lead["id"])["state"] == "LOST"
+    assert "9" in t.seen
+    assert w.stage_followups() == 0
+
+
+def test_followup_threads_into_the_opener_and_stops_on_reply(store, monkeypatch):
+    import time as _t
+    RuntimeControl().set_run_mode("live", actor="test")
+    t = FakeTransport()
+    w = make_worker(store, t)
+    lead, opener = sent_opener(store, w, t, days_ago=3.5)
+    monkeypatch.setattr(w, "draft_followup", lambda lead, n, text: f"bump {n}: happy to look at one flow free?")
+    assert w.stage_followups() == 1
+    assert w.stage_followups() == 0                                   # one per kind, ever
+    assert w.send_openers(IN_HOURS) == 1
+    bump = t.sent[-1]
+    assert bump["subject"] == "Re: quick one" and bump["in_reply_to"] and bump["body"].startswith("bump 1")
+    # second follow-up: after another 4 days, unless they reply
+    with store.transaction() as c:
+        c.execute("UPDATE outreach SET sent_at=? WHERE lead_id=? AND kind='followup_1'", (_t.time() - 5 * 86400, lead["id"]))
+    store.log_event(lead["id"], "message_in", {"text": "sure, tell me more"}, actor="prospect")
+    assert w.stage_followups() == 0
+
+
+def test_placeholder_or_replied_followup_never_sends(store, monkeypatch):
+    RuntimeControl().set_run_mode("live", actor="test")
+    t = FakeTransport()
+    w = make_worker(store, t)
+    lead, _ = sent_opener(store, w, t, days_ago=4)
+    monkeypatch.setattr(w, "draft_followup", lambda lead, n, text: "hey [first name], bump")
+    assert w.stage_followups() == 0
+    monkeypatch.setattr(w, "draft_followup", lambda lead, n, text: "fair bump")
+    assert w.stage_followups() == 1
+    store.log_event(lead["id"], "message_in", {"text": "we're good thanks"}, actor="prospect")
+    before = len(t.sent)
+    w.send_openers(IN_HOURS)
+    assert len(t.sent) == before                                       # replied since: follow-up dropped
+    assert all(o["status"] != "staged" for o in store.outreach_for_lead(lead["id"]))

@@ -81,6 +81,12 @@ ol.feed li.new{animation:flash 2s ease-out}
 #login form{width:min(420px,100%);display:flex;flex-direction:column;gap:12px}
 #login input{min-height:44px;background:#060b12;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:0 12px;font:14px var(--mono)}
 .empty{font-size:13px;color:var(--muted);padding:8px 0}
+table.attr{width:100%;border-collapse:collapse;font:13px var(--mono);min-width:520px}
+table.attr th{font:600 11px var(--sans);letter-spacing:.12em;color:var(--muted);text-align:right;padding:6px 8px;border-bottom:1px solid var(--line2)}
+table.attr th:first-child,table.attr td:first-child{text-align:left;font-family:var(--sans)}
+table.attr td{text-align:right;padding:8px;border-bottom:1px solid rgba(56,189,248,.07)}
+table.attr td.money{color:var(--amber);font-weight:600}
+.tag.hot{color:#fca5a5;border-color:rgba(248,113,113,.5)}
 @media (max-width:720px){body{padding:12px}.funnel .lab{font-size:9px}.core{transform:scale(.85);margin:-20px auto}}
 @media (prefers-reduced-motion:reduce){.ring-a,.ring-b,.pulse,ol.feed li.new{animation:none}}
 </style>
@@ -143,7 +149,7 @@ ol.feed li.new{animation:flash 2s ease-out}
       <div class="stats">
         <div class="stat"><div class="k">REPLY RATE</div><div class="v" id="replyRate">–</div></div>
         <div class="stat"><div class="k">LLM / LEAD</div><div class="v" id="costLead">–</div></div>
-        <div class="stat"><div class="k">REPLIES · WON</div><div class="v" id="wins" style="color:var(--amber)">–</div></div>
+        <div class="stat"><div class="k">PAID IN</div><div class="v" id="wins" style="color:var(--amber)">–</div></div>
       </div>
     </section>
 
@@ -156,6 +162,22 @@ ol.feed li.new{animation:flash 2s ease-out}
         <div class="ph"><h2>LIVE FEED</h2></div>
         <ol class="feed" id="feed"></ol>
       </div>
+    </section>
+  </div>
+
+  <div class="row">
+    <section class="panel" style="flex:1.4 1 520px" aria-label="Revenue by source">
+      <div class="ph"><h2 class="amber">MONEY · WHICH SOURCE PAYS</h2><span class="mono small muted" id="moneyMeta"></span></div>
+      <div style="overflow-x:auto">
+        <table class="attr">
+          <thead><tr><th scope="col">Source</th><th scope="col">Found</th><th scope="col">Contacted</th><th scope="col">Replied</th><th scope="col">Hot</th><th scope="col">Paid</th><th scope="col">Won</th></tr></thead>
+          <tbody id="attr"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel" style="flex:1 1 360px" aria-label="Replies">
+      <div class="ph"><h2>REPLIES · YOUR MOVE</h2><span class="mono small muted" id="repliesMeta"></span></div>
+      <div class="scroll" id="replies" style="max-height:420px"></div>
     </section>
   </div>
 
@@ -244,7 +266,8 @@ ol.feed li.new{animation:flash 2s ease-out}
     // core
     const sent = s.today.sent, cap = s.today.cap || 20, circ = 2 * Math.PI * 104;
     $('sentToday').textContent = sent;
-    $('capText').textContent = `of ${cap} email cap`;
+    $('capText').textContent = `of ${cap} cap · ${(s.cap && s.cap.note) || ''}`;
+    $('capText').title = s.cap ? `base ${s.cap.base}, max ${s.cap.max}; 7 days: ${s.cap.sent_7d} sent, ${s.cap.bounces_7d} bounced` : '';
     $('capArc').setAttribute('stroke-dasharray', (circ * Math.min(sent, cap) / cap).toFixed(1) + ' ' + circ.toFixed(1));
     $('foundToday').textContent = s.today.found + ' found today';
     const max = Math.max(1, ...s.funnel.map(f => f.n));
@@ -255,7 +278,31 @@ ol.feed li.new{animation:flash 2s ease-out}
         <span class="lab" style="font-size:11px;letter-spacing:.08em;color:var(--muted);text-align:center">${esc(f.label)}</span></div>`).join('');
     $('replyRate').textContent = s.rates.reply_pct + '%';
     $('costLead').textContent = money(s.rates.cost_per_lead, 4);
-    $('wins').textContent = s.rates.replied + ' · ' + s.rates.won;
+    const paid = (s.revenue && s.revenue.paid) || {};
+    $('wins').textContent = Object.keys(paid).length ? Object.entries(paid).map(([cur, v]) => `${cur === 'USD' ? '$' : cur + ' '}${Math.round(v).toLocaleString()}`).join(' · ') : '$0';
+
+    // money by source
+    const attr = (s.attribution || []).filter(a => a.found || a.contacted);
+    $('moneyMeta').textContent = `${s.rates.sent_total} sent · ${s.rates.replied} replied · ${(s.revenue || {}).won || 0} won · follow-ups ${((s.followups || {}).sent) || 0} sent, ${((s.followups || {}).staged) || 0} queued`;
+    $('attr').innerHTML = attr.map(a => `<tr><td>${esc(SRC_NAMES[a.source] || a.source)}</td><td>${a.found}</td><td>${a.contacted}</td>
+      <td>${a.replied}</td><td>${a.hot}</td><td class="money">${a.paid_usd ? '$' + Math.round(a.paid_usd).toLocaleString() : '–'}</td><td>${a.won}</td></tr>`).join('')
+      || '<tr><td colspan="7" class="muted">No leads yet.</td></tr>';
+
+    // replies
+    const reps = s.replies || [];
+    $('repliesMeta').textContent = reps.filter(r => r.hot).length + ' hot';
+    $('replies').innerHTML = reps.map(r => `
+      <article class="q" data-lead="${esc(r.lead_id)}">
+        <div class="who"><strong style="font-weight:600">${esc(r.company || r.name || r.contact)}</strong><span class="mono small muted">${esc(r.age)}</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${r.hot ? '<span class="tag hot">hot</span>' : ''}${r.intent ? `<span class="tag">${esc(r.intent)}</span>` : ''}
+          <span class="tag">${esc(r.state.toLowerCase())}</span><span class="tag">${esc(SRC_NAMES[r.source] || r.source)}</span>
+          ${r.paid ? `<span class="tag auto">paid $${Math.round(r.paid)}</span>` : ''}
+        </div>
+        <p>${esc(r.text)}</p>
+        <div class="acts"><button class="b-amber b-sm" data-pay="${esc(r.lead_id)}">Log payment</button>
+          ${/@/.test(r.contact || '') ? `<a class="btn b-sm" style="display:inline-flex;align-items:center;text-decoration:none" href="mailto:${esc(r.contact)}">Email</a>` : ''}</div>
+      </article>`).join('') || '<div class="empty">No replies yet. Follow-ups go out 3 and 7 days after each opener.</div>';
 
     // queue (don't clobber a draft being edited)
     if (!editing.size) renderQueue();
@@ -291,6 +338,7 @@ ol.feed li.new{animation:flash 2s ease-out}
         <div class="who"><strong style="font-weight:600;overflow:hidden;text-overflow:ellipsis">${esc(x.company || x.name || x.contact)}</strong>
           <span class="mono small muted" style="white-space:nowrap">${esc(x.age)}</span></div>
         <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${(x.kind || '').startsWith('followup') ? `<span class="tag auto">follow-up ${esc(x.kind.slice(-1))}</span>` : ''}
           <span class="tag">${esc(SRC_NAMES[x.source] || x.source)}</span><span class="tag">${esc(x.channel)}</span>
           ${x.market ? `<span class="tag">${esc(x.market)}</span>` : ''}
           ${x.status === 'approved' ? '<span class="tag auto">approved</span>' : x.auto ? '<span class="tag auto">auto-sends in their hours</span>' : '<span class="tag">needs you</span>'}
@@ -311,6 +359,12 @@ ol.feed li.new{animation:flash 2s ease-out}
     const btn = e.target.closest('button'); if (!btn) return;
     const card = btn.closest('.q');
     try {
+      if (btn.dataset.pay) {
+        const v = prompt('Payment received. Amount, currency, deposit or final (e.g. "625 USD deposit" or "1250 USD final"):', '625 USD deposit');
+        if (!v) return;
+        const r = await api('/api/v2/hud/action', { action: 'payment', id: btn.dataset.pay, text: v });
+        toast(r.success ? r.result : (r.error || 'failed'), !r.success); return refresh();
+      }
       if (btn.dataset.run) {
         btn.disabled = true; toast('Running ' + btn.dataset.run + '…');
         const r = await api('/api/v2/hud/action', { action: 'run_source', id: btn.dataset.run });

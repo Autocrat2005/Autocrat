@@ -76,3 +76,32 @@ def test_parse_old_text_reports():
                                 "   sell now: audit $900\n2. Other pain (wtp 2/10, 1 mentions)\n")
     assert ideas == [{"pain": "Bugs cost money", "wtp": 6, "mentions": 4, "service": "audit $900"},
                      {"pain": "Other pain", "wtp": 2, "mentions": 1, "service": ""}]
+
+
+def test_payment_moves_lead_and_shows_in_attribution(client):
+    c, engine = client
+    store = engine.store
+    lead, out = staged(store, key="pay1", contact="pay@b.com")
+    store.approve_outreach(out["id"], "test"); store.transition(lead["id"], "APPROVED")
+    store.mark_outreach_sent(out["id"], "email")
+    store.log_event(lead["id"], "message_in", {"text": "how much?", "intent": "pricing", "hot": True}, actor="prospect")
+    store.transition(lead["id"], "REPLIED")
+    r = c.post("/api/v2/hud/action", json={"action": "payment", "id": lead["id"], "text": "$625 USD deposit"},
+               headers=AUTH).json()
+    assert r["success"] and store.get_lead(lead["id"])["state"] == "DEPOSIT_OPENED"
+    c.post("/api/v2/hud/action", json={"action": "payment", "id": lead["id"], "text": "625 final"}, headers=AUTH)
+    assert store.get_lead(lead["id"])["state"] == "WON"
+    s = c.get("/api/v2/hud", headers=AUTH).json()["result"]
+    row = next(a for a in s["attribution"] if a["source"] == "show_hn")
+    assert (row["contacted"], row["replied"], row["hot"], row["paid_usd"], row["won"]) == (1, 1, 1, 1250.0, 1)
+    assert s["revenue"]["paid"] == {"USD": 1250.0}
+    assert s["replies"][0]["intent"] == "pricing" and s["replies"][0]["paid"] == 1250.0
+    assert "cap" in s["cap"]
+
+
+def test_paid_command_from_telegram_or_cli(make_engine):
+    engine = make_engine()
+    lead, _ = engine.store.upsert_lead(source="manual", dedupe_key="m1", company="Acme")
+    r = engine.execute(f"paid {lead['id']} 1,250 usd final", actor="telegram:1")
+    assert r["success"], r
+    assert engine.store.payments(lead["id"])[0]["amount"] == 1250.0

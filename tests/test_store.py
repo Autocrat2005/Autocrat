@@ -20,7 +20,7 @@ def walk_to(store, lead_id, *states):
 
 def test_wal_mode_and_migrations(store):
     assert store.journal_mode().lower() == "wal"
-    assert store.migrate() == 1
+    assert store.migrate() == 2
 
 
 def test_upsert_dedupes(store):

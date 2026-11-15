@@ -43,6 +43,10 @@ class PipelinePlugin(NexusPlugin):
         self.register_command("lead_dnc", self.lead_dnc, "Mark a lead do-not-contact (permanent)",
                               "dnc <id>", side_effect="internal",
                               patterns=[r"^dnc\s+(?P<lead_id>[0-9a-f]{12})$"])
+        self.register_command("lead_paid", self.lead_paid, "Record money received (deposit or final)",
+                              "paid <id> <amount> [currency] [final]", side_effect="internal",
+                              patterns=[r"^paid\s+(?P<lead_id>[0-9a-f]{12})\s+\$?(?P<amount>[\d,]+(?:\.\d+)?)"
+                                        r"(?:\s+(?P<currency>[A-Za-z]{3}))?(?:\s+(?P<kind>final|deposit))?$"])
         self.register_command("outreach_stage", self.outreach_stage, "Stage a first-touch draft",
                               "stage <id> <draft>", side_effect="internal")
         self.register_command("outreach_approve", self.outreach_approve,
@@ -113,6 +117,18 @@ class PipelinePlugin(NexusPlugin):
 
     def lead_dnc(self, lead_id: str = "", reason: str = "requested", **kwargs):
         return self.lead_advance(lead_id=lead_id, state="DNC", reason=reason)
+
+    def lead_paid(self, lead_id: str = "", amount: str = "0", currency: str = "", kind: str = "", **kwargs):
+        try:
+            value = float(str(amount).replace(",", ""))
+            pay = self.store.record_payment(str(lead_id), value, currency=(currency or "USD").upper(),
+                                            kind=kind or "deposit", actor=current_actor())
+        except (KeyError, ValueError) as e:
+            return self._err(e)
+        lead = self.store.get_lead(pay["lead_id"])
+        return {"success": True, "payment": pay,
+                "result": f"💰 {pay['currency']} {pay['amount']:,.2f} {pay['kind']} recorded for "
+                          f"{lead.get('company') or lead.get('name') or lead['id']} (now {lead['state']})"}
 
     def outreach_stage(self, lead_id: str = "", draft: str = "", channel: str = "", **kwargs):
         lead = self.store.get_lead(str(lead_id))
