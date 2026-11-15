@@ -180,6 +180,15 @@ async def root():
     return HTMLResponse("<h1>Autocrat</h1><p>Static files not found.</p>")
 
 
+@app.get("/hud", response_class=HTMLResponse)
+async def hud_page():
+    """The revenue command deck. The page itself is public; every number it shows needs the token."""
+    path = os.path.join(static_dir, "hud.html")
+    if os.path.exists(path):
+        return FileResponse(path, headers={"Cache-Control": "no-store"})
+    return HTMLResponse("<h1>HUD not found</h1>", status_code=404)
+
+
 @app.get("/api/greeting")
 async def get_greeting():
     """Return a JARVIS-style startup greeting for the web dashboard."""
@@ -651,6 +660,39 @@ async def control_status(authorization: Optional[str] = Header(None)):
     except Exception as e:
         status["llm_budget"] = {"error": str(e)}
     return {"success": True, "result": status}
+
+
+class HudAction(BaseModel):
+    action: str            # approve | skip | dnc | edit | run_source | opportunities
+    id: Optional[str] = ""
+    text: Optional[str] = ""
+
+
+@app.get("/api/v2/hud")
+async def hud_snapshot(authorization: Optional[str] = Header(None)):
+    """Everything the command deck shows, from the local store (PROTECTED, no LLM calls)."""
+    verify_token(authorization)
+    if not engine:
+        return {"success": False, "error": "Engine not initialized"}
+    from nexus.web.hud import build_snapshot
+    loop = asyncio.get_running_loop()
+    return {"success": True, "result": await loop.run_in_executor(None, lambda: build_snapshot(engine))}
+
+
+@app.post("/api/v2/hud/action")
+async def hud_action(req: HudAction, authorization: Optional[str] = Header(None)):
+    """Deck buttons: approve / skip / DNC / edit a draft, run a radar source, run the opportunity scout."""
+    verify_token(authorization)
+    if not engine:
+        return {"success": False, "error": "Engine not initialized"}
+    from nexus.web.hud import do_action
+    loop = asyncio.get_running_loop()
+    EventBus().bind_loop(loop)
+    try:
+        return await loop.run_in_executor(
+            None, lambda: do_action(engine, req.action, req.id or "", req.text or "", actor="hud"))
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.post("/api/v2/control")

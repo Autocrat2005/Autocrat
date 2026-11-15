@@ -248,6 +248,8 @@ def run_web(engine, host, port, bus=None, heartbeat=None):
         access_log=False,
     )
     server = uvicorn.Server(config)
+    shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    log.info(f"🛰️ Command deck: http://{shown}:{port}/hud (token: AUTOCRAT_AUTH_TOKEN in .env)")
     server.run()
 
 

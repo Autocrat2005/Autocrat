@@ -483,6 +483,41 @@ class Store:
         self._events.emit("outreach.approved", {"lead_id": out["lead_id"], "outreach": out, "actor": actor})
         return out
 
+    def update_outreach_draft(self, outreach_id: str, draft: str, actor: str) -> Dict[str, Any]:
+        """Edit a draft before it goes out (only while staged or approved)."""
+        draft = (draft or "").strip()
+        if not draft:
+            raise ValueError("draft is empty")
+        with self.transaction() as c:
+            cur = c.execute("UPDATE outreach SET draft=? WHERE id=? AND status IN ('staged','approved')",
+                            (draft, outreach_id))
+            out = _row(c.execute("SELECT * FROM outreach WHERE id=?", (outreach_id,)).fetchone())
+        if not out:
+            raise KeyError(f"Unknown outreach {outreach_id}")
+        if cur.rowcount == 0:
+            raise AlreadyContacted(f"Outreach {outreach_id} is '{out['status']}', can't edit it now")
+        self.audit(actor, "outreach_edit", {"outreach_id": outreach_id})
+        self._events.emit("outreach.edited", {"lead_id": out["lead_id"], "outreach": out, "actor": actor})
+        return out
+
+    def reject_outreach(self, outreach_id: str, actor: str, reason: str = "") -> Dict[str, Any]:
+        """Drop a draft that should never go out; the lead is archived (not DNC: they never said no)."""
+        with self.transaction() as c:
+            cur = c.execute("UPDATE outreach SET status='rejected' WHERE id=? AND status IN ('staged','approved')",
+                            (outreach_id,))
+            out = _row(c.execute("SELECT * FROM outreach WHERE id=?", (outreach_id,)).fetchone())
+        if not out:
+            raise KeyError(f"Unknown outreach {outreach_id}")
+        if cur.rowcount == 0:
+            raise AlreadyContacted(f"Outreach {outreach_id} is '{out['status']}', can't skip it now")
+        self.audit(actor, "outreach_reject", {"outreach_id": outreach_id, "reason": reason})
+        lead = self.get_lead(out["lead_id"])
+        if lead and lead["state"] in (LeadState.STAGED.value, LeadState.APPROVED.value):
+            self.transition(out["lead_id"], LeadState.ARCHIVED.value, actor=actor,
+                            payload={"outreach_id": outreach_id, "reason": reason or "skipped"})
+        self._events.emit("outreach.rejected", {"lead_id": out["lead_id"], "outreach": out, "actor": actor})
+        return out
+
     def mark_outreach_sent(self, outreach_id: str, actor: str) -> Dict[str, Any]:
         """Atomically flip approved → sent. A second call raises AlreadyContacted."""
         now = _now()

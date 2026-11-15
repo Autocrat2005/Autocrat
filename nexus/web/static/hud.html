@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autocrat Command Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#04070c; --panel:rgba(8,15,24,.92); --line:rgba(56,189,248,.22); --line2:rgba(56,189,248,.14);
+  --cyan:#38bdf8; --cyan2:#7dd3fc; --amber:#fbbf24; --green:#34d399; --red:#f87171;
+  --text:#e2e8f0; --text2:#cbd5e1; --muted:#8aa0b4; --track:rgba(148,163,184,.18);
+  --sans:'Space Grotesk',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans)}
+body{min-height:100vh;padding:20px;
+  background-image:linear-gradient(rgba(56,189,248,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(56,189,248,.045) 1px,transparent 1px);
+  background-size:32px 32px}
+.wrap{max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.panel{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:16px;min-width:0}
+.panel.amber{border-color:rgba(251,191,36,.35)}
+h2{margin:0;font-size:13px;letter-spacing:.18em;color:var(--cyan2);font-weight:700}
+h2.amber{color:var(--amber)}
+.ph{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.mono{font-family:var(--mono)} .muted{color:var(--muted)} .small{font-size:11px}
+button,.btn{font:600 13px var(--sans);letter-spacing:.04em;border-radius:6px;cursor:pointer;min-height:40px;padding:0 14px;
+  background:transparent;color:var(--text);border:1px solid rgba(56,189,248,.35)}
+button:hover{border-color:var(--cyan2)}
+button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--cyan2);outline-offset:2px}
+button:disabled{opacity:.45;cursor:default}
+.b-amber{background:var(--amber);color:#1a1305;border:0}
+.b-red{color:#fca5a5;border-color:rgba(248,113,113,.55)}
+.b-green{background:var(--green);color:#04130c;border:0}
+.b-ghost{color:var(--text2);border-color:rgba(148,163,184,.35)}
+.b-sm{min-height:32px;padding:0 10px;font-size:12px}
+header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px;padding:12px 18px}
+.brand{display:flex;align-items:center;gap:14px}
+.brand b{font-size:18px;letter-spacing:.22em;display:block}
+.chip{display:flex;align-items:center;gap:8px;font:12px var(--mono);color:var(--muted);padding:0 12px;min-height:40px;border:1px solid var(--line2);border-radius:6px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}} @keyframes spinr{to{transform:rotate(-360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}} @keyframes flash{from{background:rgba(56,189,248,.18)}to{background:transparent}}
+.ring-a{animation:spin 28s linear infinite;transform-origin:150px 150px}
+.ring-b{animation:spinr 18s linear infinite;transform-origin:150px 150px}
+.pulse{animation:pulse 1.6s ease-in-out infinite}
+.row{display:flex;flex-wrap:wrap;gap:16px;align-items:stretch}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.src{display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 10px;border-radius:6px;background:rgba(56,189,248,.05)}
+.src .nm{font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{height:6px;border-radius:3px;background:var(--track);overflow:hidden}
+.bar>i{display:block;height:6px;border-radius:3px;background:var(--cyan)}
+.core{position:relative;width:300px;height:300px;margin:0 auto}
+.core .mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center}
+.funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+.funnel .h{height:64px;display:flex;align-items:flex-end}
+.funnel .h i{display:block;width:100%;border-radius:4px 4px 0 0}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.stat{border:1px solid var(--line2);border-radius:8px;padding:10px 12px}
+.stat .k{font-size:11px;letter-spacing:.12em;color:var(--muted)} .stat .v{font:600 20px var(--mono)}
+.q{border:1px solid var(--line2);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.q .who{display:flex;justify-content:space-between;gap:8px;font-size:13px}
+.q p{margin:0;font-size:13px;line-height:1.55;color:var(--text2);white-space:pre-wrap;word-break:break-word}
+.q textarea{width:100%;min-height:120px;background:#060b12;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px;font:13px/1.5 var(--sans)}
+.q .acts{display:flex;flex-wrap:wrap;gap:8px}
+.tag{font:11px var(--mono);color:var(--muted);border:1px solid var(--line2);border-radius:4px;padding:2px 6px}
+.tag.auto{color:var(--amber);border-color:rgba(251,191,36,.4)}
+.scroll{max-height:640px;overflow:auto;display:flex;flex-direction:column;gap:10px;padding-right:4px}
+ol.feed{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;font:12px/1.5 var(--mono);max-height:340px;overflow:auto}
+ol.feed li{display:grid;grid-template-columns:44px 10px minmax(0,1fr);gap:8px;align-items:baseline;border-radius:4px}
+ol.feed li.new{animation:flash 2s ease-out}
+.ideas{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.idea{border:1px solid var(--line2);border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.idea h3{margin:0;font-size:15px;font-weight:600;line-height:1.35}
+.idea p{margin:0;font-size:13px;color:var(--text2);line-height:1.5}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);max-width:min(560px,calc(100vw - 32px));background:#0b1622;border:1px solid var(--line);
+  border-radius:8px;padding:12px 16px;font-size:14px;display:none;z-index:20}
+#login{position:fixed;inset:0;background:rgba(4,7,12,.96);display:flex;align-items:center;justify-content:center;z-index:30;padding:16px}
+#login[hidden]{display:none}
+#login form{width:min(420px,100%);display:flex;flex-direction:column;gap:12px}
+#login input{min-height:44px;background:#060b12;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:0 12px;font:14px var(--mono)}
+.empty{font-size:13px;color:var(--muted);padding:8px 0}
+@media (max-width:720px){body{padding:12px}.funnel .lab{font-size:9px}.core{transform:scale(.85);margin:-20px auto}}
+@media (prefers-reduced-motion:reduce){.ring-a,.ring-b,.pulse,ol.feed li.new{animation:none}}
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <form id="loginForm">
+    <h2>AUTOCRAT · ACCESS</h2>
+    <label for="tok" class="muted small">Paste AUTOCRAT_AUTH_TOKEN from your .env (kept in this browser only)</label>
+    <input id="tok" type="password" autocomplete="off" spellcheck="false" required>
+    <button class="b-amber" type="submit">Enter deck</button>
+    <span id="loginErr" class="small" style="color:var(--red)"></span>
+  </form>
+</div>
+
+<div class="wrap">
+  <header class="panel top">
+    <div class="brand">
+      <svg width="36" height="36" viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="16" fill="none" stroke="#38bdf8" stroke-width="1.5" opacity=".5"/><circle cx="18" cy="18" r="9" fill="none" stroke="#38bdf8" stroke-width="2"/><circle cx="18" cy="18" r="3" fill="#7dd3fc"/></svg>
+      <div><b>AUTOCRAT</b><span class="mono small muted" style="letter-spacing:.12em">REVENUE ENGINE · WINDROSE LABS</span></div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
+      <span class="chip" title="LLM spend since midnight"><span>LLM TODAY</span><b id="llmToday" style="color:var(--amber)">–</b><span id="llmCalls"></span></span>
+      <span class="chip" title="Live event stream"><span id="wsDot" class="dot" style="background:#64748b"></span><span id="wsText">offline</span></span>
+      <button id="modeBtn" aria-label="Switch run mode"><span id="modeDot" class="dot pulse" style="margin-right:8px"></span><span id="modeText">–</span></button>
+      <button id="killBtn" class="b-red">Kill switch</button>
+    </div>
+  </header>
+
+  <div class="row">
+    <section class="col" style="flex:1 1 300px" aria-label="Radar and budget">
+      <div class="panel">
+        <div class="ph"><h2>RADAR</h2><span class="mono small muted" id="srcMeta"></span></div>
+        <div id="sources" style="display:flex;flex-direction:column;gap:8px"></div>
+      </div>
+      <div class="panel">
+        <div class="ph"><h2>LLM BUDGET · 30 DAYS</h2><span class="mono small muted" id="budgetTotal"></span></div>
+        <div id="budgets" style="display:flex;flex-direction:column;gap:14px"></div>
+        <p class="mono small muted" style="margin:14px 0 0;line-height:1.6">Haiku first, DeepSeek fallback, local Llama last. Each provider is paced to 2× its daily share.</p>
+      </div>
+    </section>
+
+    <section class="panel" style="flex:1.4 1 420px;display:flex;flex-direction:column;gap:18px" aria-label="Pipeline core">
+      <div class="ph" style="margin:0"><h2>PIPELINE CORE</h2><span class="mono small muted" id="foundToday"></span></div>
+      <div class="core">
+        <svg width="300" height="300" viewBox="0 0 300 300" aria-hidden="true" style="position:absolute;inset:0">
+          <g class="ring-a"><circle cx="150" cy="150" r="140" fill="none" stroke="#38bdf8" stroke-width="1" stroke-dasharray="2 10" opacity=".6"/></g>
+          <g class="ring-b"><circle cx="150" cy="150" r="122" fill="none" stroke="#38bdf8" stroke-width="3" stroke-dasharray="60 24 12 24" opacity=".45"/></g>
+          <circle cx="150" cy="150" r="104" fill="none" stroke="rgba(148,163,184,.18)" stroke-width="10"/>
+          <circle id="capArc" cx="150" cy="150" r="104" fill="none" stroke="#fbbf24" stroke-width="10" stroke-linecap="round" stroke-dasharray="0 654" transform="rotate(-90 150 150)" style="transition:stroke-dasharray .8s ease"/>
+          <circle cx="150" cy="150" r="84" fill="rgba(56,189,248,.06)" stroke="rgba(56,189,248,.35)" stroke-width="1"/>
+        </svg>
+        <div class="mid">
+          <span class="mono small muted" style="letter-spacing:.16em">SENT TODAY</span>
+          <span id="sentToday" style="font-size:44px;font-weight:700;color:var(--amber)">–</span>
+          <span id="capText" class="mono" style="font-size:12px;color:var(--muted)"></span>
+        </div>
+      </div>
+      <div class="funnel" id="funnel"></div>
+      <div class="stats">
+        <div class="stat"><div class="k">REPLY RATE</div><div class="v" id="replyRate">–</div></div>
+        <div class="stat"><div class="k">LLM / LEAD</div><div class="v" id="costLead">–</div></div>
+        <div class="stat"><div class="k">REPLIES · WON</div><div class="v" id="wins" style="color:var(--amber)">–</div></div>
+      </div>
+    </section>
+
+    <section class="col" style="flex:1.1 1 340px" aria-label="Approvals and live feed">
+      <div class="panel amber">
+        <div class="ph"><h2 class="amber">AWAITING YOU</h2><span class="mono small muted" id="queueMeta"></span></div>
+        <div class="scroll" id="queue"></div>
+      </div>
+      <div class="panel" style="flex:1">
+        <div class="ph"><h2>LIVE FEED</h2></div>
+        <ol class="feed" id="feed"></ol>
+      </div>
+    </section>
+  </div>
+
+  <section class="panel" aria-label="Opportunity scout">
+    <div class="ph"><h2>OPPORTUNITY SCOUT · WHAT PEOPLE WILL PAY FOR</h2>
+      <span style="display:flex;gap:10px;align-items:center"><span class="mono small muted" id="scoutMeta"></span><button class="b-sm" id="scoutBtn">Run now (~$0.003)</button></span></div>
+    <div class="ideas" id="ideas"></div>
+  </section>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  const KEY = 'autocrat_token';
+  const store = { get(){ try { return localStorage.getItem(KEY) || ''; } catch(e){ return ''; } },
+                  set(v){ try { localStorage.setItem(KEY, v); } catch(e){} },
+                  clear(){ try { localStorage.removeItem(KEY); } catch(e){} } };
+  let token = store.get(), snap = null, editing = new Set(), ws = null, refreshTimer = null;
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const money = (v, d=3) => '$' + Number(v || 0).toFixed(d);
+  const hhmm = (ts) => { const d = new Date((ts || 0) * 1000); return d.toTimeString().slice(0,5); };
+  const SRC_NAMES = { hn:'HN hiring + Ask HN', reddit_rss:'Reddit RSS', reddit:'Reddit (Apify)', show_hn:'Show HN',
+    launch_boards:'Launch boards', lovable_showcase:'Lovable showcase', uae_brokers:'UAE broker list',
+    vibe_founders:'Founder CSV', google_maps:'Google Maps (Apify)', google_places:'Google Places' };
+
+  function toast(msg, bad) {
+    const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+    t.style.borderColor = bad ? 'rgba(248,113,113,.6)' : 'rgba(56,189,248,.35)';
+    clearTimeout(t._h); t._h = setTimeout(() => { t.style.display = 'none'; }, 4200);
+  }
+  async function api(path, body) {
+    const r = await fetch(path, { method: body ? 'POST' : 'GET',
+      headers: { 'Authorization': 'Bearer ' + token, ...(body ? {'Content-Type':'application/json'} : {}) },
+      body: body ? JSON.stringify(body) : undefined });
+    if (r.status === 401) { showLogin('Token rejected. Paste it again.'); throw new Error('unauthorized'); }
+    return r.json();
+  }
+  function showLogin(err) { $('login').hidden = false; $('loginErr').textContent = err || ''; $('tok').focus(); }
+  $('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault(); token = $('tok').value.trim(); store.set(token);
+    try { await refresh(); $('login').hidden = true; connectWs(); } catch (err) { /* showLogin already ran */ }
+  });
+
+  async function refresh() {
+    const d = await api('/api/v2/hud');
+    if (!d.success) { toast(d.error || 'snapshot failed', true); return; }
+    snap = d.result; render();
+  }
+  function scheduleRefresh(ms) { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh().catch(()=>{}), ms); }
+
+  function render() {
+    const s = snap, c = s.control;
+    const killed = c.kill_switch, live = c.run_mode === 'live';
+    $('modeText').textContent = killed ? 'HALTED' : (live ? 'LIVE' : 'DRY RUN');
+    $('modeDot').style.background = killed ? 'var(--red)' : (live ? 'var(--green)' : 'var(--amber)');
+    $('killBtn').textContent = killed ? 'Resume engine' : 'Kill switch';
+    $('killBtn').className = killed ? 'b-green' : 'b-red';
+    $('llmToday').textContent = money(s.today.llm_usd, 3);
+    $('llmCalls').textContent = s.today.llm_calls + ' calls';
+
+    // radar
+    const srcs = s.sources || [];
+    $('srcMeta').textContent = srcs.filter(x => x.enabled).length + ' on · ' + srcs.reduce((a, x) => a + x.leads_24h, 0) + ' leads 24h';
+    $('sources').innerHTML = srcs.map(x => `
+      <div class="src">
+        <span class="dot" style="background:${x.enabled ? (x.leads_24h ? 'var(--green)' : 'var(--cyan)') : '#64748b'}"></span>
+        <div style="min-width:0"><div class="nm">${esc(SRC_NAMES[x.name] || x.name)}</div>
+          <div class="mono small muted">${x.enabled ? `ran ${esc(x.last)} · next ${esc(x.next)}` : 'off'}</div></div>
+        <div style="display:flex;align-items:center;gap:8px"><span class="mono" title="leads in 24h / total">${x.leads_24h}<span class="muted">/${x.leads_total}</span></span>
+          ${x.enabled ? `<button class="b-sm" data-run="${esc(x.name)}" aria-label="Run ${esc(x.name)} now">Run</button>` : ''}</div>
+      </div>`).join('') || '<div class="empty">Radar plugin not loaded.</div>';
+
+    // budget
+    const b = s.budget || {}, provs = b.providers || {};
+    $('budgetTotal').textContent = b.cost_usd !== undefined ? money(b.cost_usd, 3) + ' / ' + money(b.budget_usd, 2) : '';
+    $('budgets').innerHTML = Object.entries(provs).map(([name, p]) => {
+      const pct = p.budget_usd ? Math.min(100, 100 * p.spent_usd / p.budget_usd) : 0;
+      return `<div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;justify-content:space-between;font-size:13px"><span>${esc(name)}</span>
+          <span class="mono muted">${money(p.spent_usd, 3)} / ${money(p.budget_usd, 2)}</span></div>
+        <div class="bar"><i style="width:${Math.max(pct, 0.6)}%;${p.blocked ? 'background:var(--red)' : ''}"></i></div>
+        <span class="mono small muted">${p.blocked ? esc(p.blocked) : 'daily cap ' + money(p.daily_cap_usd, 2)}</span></div>`;
+    }).join('') || '<div class="empty">No provider budgets configured.</div>';
+
+    // core
+    const sent = s.today.sent, cap = s.today.cap || 20, circ = 2 * Math.PI * 104;
+    $('sentToday').textContent = sent;
+    $('capText').textContent = `of ${cap} email cap`;
+    $('capArc').setAttribute('stroke-dasharray', (circ * Math.min(sent, cap) / cap).toFixed(1) + ' ' + circ.toFixed(1));
+    $('foundToday').textContent = s.today.found + ' found today';
+    const max = Math.max(1, ...s.funnel.map(f => f.n));
+    $('funnel').innerHTML = s.funnel.map((f, i) => `
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div class="h"><i style="height:${Math.max(4, Math.round(64 * f.n / max))}px;background:${i >= 4 ? 'var(--amber)' : `rgba(56,189,248,${(0.85 - i * 0.12).toFixed(2)})`}"></i></div>
+        <span class="mono" style="font-size:18px;font-weight:600;text-align:center">${f.n}</span>
+        <span class="lab" style="font-size:11px;letter-spacing:.08em;color:var(--muted);text-align:center">${esc(f.label)}</span></div>`).join('');
+    $('replyRate').textContent = s.rates.reply_pct + '%';
+    $('costLead').textContent = money(s.rates.cost_per_lead, 4);
+    $('wins').textContent = s.rates.replied + ' · ' + s.rates.won;
+
+    // queue (don't clobber a draft being edited)
+    if (!editing.size) renderQueue();
+
+    // feed
+    $('feed').innerHTML = (s.feed || []).map(f => feedItem(f)).join('');
+
+    // ideas
+    const ideas = (s.opportunities || {}).ideas || [];
+    $('scoutMeta').textContent = 'last run ' + ((s.opportunities || {}).last || 'never');
+    $('ideas').innerHTML = ideas.map(i => `
+      <article class="idea">
+        <div style="display:flex;align-items:center;gap:10px"><span class="mono small muted">WTP ${esc(i.wtp)}/10 · ${esc(i.mentions || 0)} mentions</span>
+          <div class="bar" style="flex:1;max-width:120px;height:4px"><i style="height:4px;background:var(--amber);width:${10 * Number(i.wtp || 0)}%"></i></div></div>
+        <h3>${esc(i.pain)}</h3>
+        ${i.service ? `<p><span class="muted">Sell now:</span> ${esc(i.service)}</p>` : ''}
+        ${i.validate ? `<p><span class="muted">Validate:</span> ${esc(i.validate)}</p>` : ''}
+      </article>`).join('') || '<div class="empty">No report yet. The scout runs daily once the radar has 10+ recent posts.</div>';
+  }
+
+  function feedItem(f, isNew) {
+    const k = f.kind || '';
+    const color = k.includes('sent') ? 'var(--amber)' : k.includes('repl') || k.includes('won') ? 'var(--green)'
+      : k.includes('dnc') || k.includes('reject') || k.includes('kill') ? 'var(--red)' : k === 'audit' ? 'var(--cyan2)' : 'var(--cyan)';
+    return `<li class="${isNew ? 'new' : ''}"><span class="muted">${hhmm(f.ts)}</span><span class="dot" style="width:6px;height:6px;background:${color}"></span><span style="color:var(--text2)">${esc(f.text)}</span></li>`;
+  }
+
+  function renderQueue() {
+    const q = snap.queue || [];
+    $('queueMeta').textContent = q.length + ' drafts · ' + q.filter(x => x.auto).length + ' auto-send';
+    $('queue').innerHTML = q.map(x => `
+      <article class="q" data-id="${esc(x.id)}">
+        <div class="who"><strong style="font-weight:600;overflow:hidden;text-overflow:ellipsis">${esc(x.company || x.name || x.contact)}</strong>
+          <span class="mono small muted" style="white-space:nowrap">${esc(x.age)}</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          <span class="tag">${esc(SRC_NAMES[x.source] || x.source)}</span><span class="tag">${esc(x.channel)}</span>
+          ${x.market ? `<span class="tag">${esc(x.market)}</span>` : ''}
+          ${x.status === 'approved' ? '<span class="tag auto">approved</span>' : x.auto ? '<span class="tag auto">auto-sends in their hours</span>' : '<span class="tag">needs you</span>'}
+          ${/^https?:\/\//i.test(x.url || '') ? `<a class="tag" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">open</a>` : ''}
+        </div>
+        <p data-draft>${esc(x.draft)}</p>
+        <div class="acts">
+          ${x.status === 'staged' ? `<button class="b-amber b-sm" data-act="approve">Approve</button>` : ''}
+          <button class="b-sm" data-act="edit">Edit</button>
+          <button class="b-ghost b-sm" data-act="skip">Skip</button>
+          <button class="b-red b-sm" data-act="dnc">DNC</button>
+        </div>
+      </article>`).join('') || '<div class="empty">Nothing waiting. The radar keeps hunting.</div>';
+  }
+
+  // ── actions
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button'); if (!btn) return;
+    const card = btn.closest('.q');
+    try {
+      if (btn.dataset.run) {
+        btn.disabled = true; toast('Running ' + btn.dataset.run + '…');
+        const r = await api('/api/v2/hud/action', { action: 'run_source', id: btn.dataset.run });
+        const res = r.result || {};
+        toast(r.success ? `${btn.dataset.run}: ${res.new ?? 0} new, ${res.STAGED ?? 0} staged${res.note ? ' · ' + res.note : ''}${res.error ? ' · ' + res.error : ''}` : (r.error || 'failed'), !r.success || res.error);
+        btn.disabled = false; return refresh();
+      }
+      if (card) {
+        const id = card.dataset.id, act = btn.dataset.act;
+        if (act === 'edit') {
+          const p = card.querySelector('[data-draft]');
+          if (!editing.has(id)) {
+            editing.add(id);
+            const ta = document.createElement('textarea'); ta.value = p.textContent; ta.setAttribute('aria-label', 'Edit draft');
+            p.replaceWith(ta); ta.focus(); btn.textContent = 'Save';
+          } else {
+            const ta = card.querySelector('textarea');
+            const r = await api('/api/v2/hud/action', { action: 'edit', id, text: ta.value });
+            editing.delete(id); toast(r.success ? 'Draft saved.' : (r.error || 'save failed'), !r.success); return refresh();
+          }
+          return;
+        }
+        if (act === 'dnc' && !confirm('Mark this lead do-not-contact? They will never be messaged again.')) return;
+        btn.disabled = true;
+        const r = await api('/api/v2/hud/action', { action: act, id });
+        editing.delete(id);
+        const msg = typeof r.result === 'string' ? r.result : (r.error || (r.success ? 'Done.' : 'Failed.'));
+        toast(msg, !r.success); return refresh();
+      }
+      if (btn.id === 'killBtn') {
+        const killed = snap && snap.control.kill_switch;
+        if (!killed && !confirm('Engage the kill switch? All sending stops until you resume.')) return;
+        const r = await api('/api/v2/control', { action: killed ? 'resume' : 'kill', reason: 'from HUD' });
+        toast(typeof r.result === 'string' ? r.result : (r.error || 'Done.'), !r.success); return refresh();
+      }
+      if (btn.id === 'modeBtn') {
+        const live = snap && snap.control.run_mode === 'live';
+        const to = live ? 'dry_run' : 'live';
+        if (!confirm(live ? 'Switch to DRY RUN? Nothing will be sent.' : 'Switch to LIVE? Approved and auto-send emails will go out.')) return;
+        const r = await api('/api/v2/control', { action: 'run_mode', mode: to });
+        toast(typeof r.result === 'string' ? r.result : (r.error || r.message || 'Requested.'), !r.success); return refresh();
+      }
+      if (btn.id === 'scoutBtn') {
+        btn.disabled = true; toast('Opportunity scout running (one LLM call)…');
+        const r = await api('/api/v2/hud/action', { action: 'opportunities' });
+        btn.disabled = false; toast(r.success ? 'New report in. Also sent to Telegram.' : (r.error || 'failed'), !r.success); return refresh();
+      }
+    } catch (err) { if (String(err.message) !== 'unauthorized') toast(String(err.message || err), true); btn.disabled = false; }
+  });
+
+  // ── live stream (first-frame auth, never in the URL)
+  function connectWs() {
+    try { if (ws) ws.close(); } catch (e) {}
+    ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/v2');
+    ws.onopen = () => { ws.send(JSON.stringify({ type: 'auth', token, client: 'hud' })); };
+    ws.onmessage = (m) => {
+      let f; try { f = JSON.parse(m.data); } catch (e) { return; }
+      if (f.type === 'welcome') { ws.send(JSON.stringify({ type: 'subscribe', topics: ['*'] }));
+        $('wsDot').style.background = 'var(--green)'; $('wsText').textContent = 'live'; return; }
+      if (f.type !== 'event') return;
+      const p = f.payload || {};
+      const text = f.event + (p.description ? ' · ' + p.description : p.outreach && p.outreach.channel ? ' · ' + p.outreach.channel : '');
+      $('feed').insertAdjacentHTML('afterbegin', feedItem({ ts: f.ts, text, kind: f.event }, true));
+      scheduleRefresh(1200);
+    };
+    ws.onclose = () => { $('wsDot').style.background = '#64748b'; $('wsText').textContent = 'reconnecting'; setTimeout(connectWs, 5000); };
+  }
+
+  // ── boot
+  if (!token) showLogin();
+  else refresh().then(() => { $('login').hidden = true; connectWs(); }).catch(() => {});
+  setInterval(() => { if (token && !document.hidden) refresh().catch(() => {}); }, 20000);
+})();
+</script>
+</body>
+</html>
