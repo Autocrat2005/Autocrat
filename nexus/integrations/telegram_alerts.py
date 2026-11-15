@@ -55,6 +55,10 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
                 "text": f"🔴 RUN_MODE → <b>{html.escape(str(data.get('run_mode')))}</b> "
                         f"(by {html.escape(str(data.get('actor', '?')))})"}
 
+    if event.startswith("report."):
+        text = str(data.get("text") or "")
+        return {"priority": "orange", "buttons": [], "text": html.escape(text)} if text else None
+
     if event not in ("lead.transition", "lead.signal"):
         return None
 
@@ -79,8 +83,10 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
             score = (f"{html.escape(str(triage.get('icp', '')))} · intent {triage.get('intent')}/10\n"
                      f"{html.escape(str(triage.get('summary', '')))}\n")
         where = f"Channel: {html.escape(outreach['channel'])}"
-        if outreach["channel"] == "email" and lead:
+        if outreach["channel"] in ("email", "call") and lead:
             where += f" → {html.escape(lead.get('contact') or '')}"
+        if outreach["channel"] == "call":
+            where += " (no email found: call them, the draft is your opening line)"
         send_from = ((lead or {}).get("data") or {}).get("send_from")
         if send_from:
             where += f"\nSend from: <b>{html.escape(str(send_from))}</b>"

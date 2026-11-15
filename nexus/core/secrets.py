@@ -74,7 +74,7 @@ def load_env(path: Optional[Path] = None, override: bool = False) -> Dict[str, s
                 if not parsed:
                     continue
                 key, value = parsed
-                if override or key not in os.environ:
+                if (override and value) or key not in os.environ:
                     os.environ[key] = value
                 loaded[key] = value
         _loaded_from = path

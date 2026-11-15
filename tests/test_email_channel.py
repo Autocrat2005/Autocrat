@@ -85,6 +85,16 @@ def test_live_auto_send_with_optout_and_cap(store):
     assert w.send_openers(IN_HOURS) == 0
 
 
+def test_placeholder_drafts_never_send(store):
+    RuntimeControl().set_run_mode("live", actor="test")
+    lead, _ = store.upsert_lead(source="x", dedupe_key="ph", name="", channel="email", contact="a@b.ae")
+    store.transition(lead["id"], "TRIAGED")
+    out = store.stage_outreach(lead["id"], "email", "subject: hi\nhey [first name], quick one")
+    store.transition(lead["id"], "STAGED", payload={"outreach_id": out["id"]})
+    t = FakeTransport()
+    assert make_worker(store, t).send_openers(IN_HOURS) == 0 and t.sent == []
+
+
 def test_no_sends_at_night_or_in_dry_run(store):
     staged_email_lead(store)
     t = FakeTransport()
@@ -151,6 +161,10 @@ def test_each_lead_gets_its_own_business_hours(store):
     store.transition(us["id"], "STAGED", payload={"outreach_id": out["id"]})
     t = FakeTransport()
     w = make_worker(store, t)
+    at = datetime(2026, 11, 16, 15, 0, tzinfo=timezone.utc)
+    w.postal = ""
+    assert w.send_openers(at) == 0                               # US held: no postal address yet
+    w.postal = "Windrose Labs, 1 Example St, Pune, India"
     # 15:00 UTC = 19:00 Dubai (closed) and 10:00 New York (open): only the US lead goes out
-    assert w.send_openers(datetime(2026, 11, 16, 15, 0, tzinfo=timezone.utc)) == 1
-    assert t.sent[0]["to"] == "joe@startup.com"
+    assert w.send_openers(at) == 1
+    assert t.sent[0]["to"] == "joe@startup.com" and t.sent[0]["body"].endswith("1 Example St, Pune, India")

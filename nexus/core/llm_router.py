@@ -48,6 +48,7 @@ class LLMResult:
     data: Optional[Any] = None  # parsed JSON when json_mode=True
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    truncated: bool = False  # provider stopped at max_tokens
 
 
 class BudgetExceeded(RuntimeError):
@@ -159,6 +160,7 @@ class AnthropicProvider:
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
             cache_read_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
             cache_write_tokens=int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+            truncated=getattr(resp, "stop_reason", "") == "max_tokens",
         )
 
 
@@ -228,6 +230,7 @@ class DeepSeekProvider:
             provider=self.name, model=model,
             input_tokens=int(usage.get("prompt_tokens", 0) or 0),
             output_tokens=int(usage.get("completion_tokens", 0) or 0),
+            truncated=choice.get("finish_reason") == "length",
         )
 
 
@@ -427,11 +430,22 @@ class LLMRouter:
             result.latency_ms = round((time.time() - started) * 1000, 1)
             result.cost_usd = self.price(model_name, result.input_tokens, result.output_tokens, provider_name,
                                          result.cache_read_tokens, result.cache_write_tokens)
-            if json_mode or json_schema:
-                result.data = _parse_json(result.text)
+            # Record spend BEFORE parsing, so a bad reply never hides its cost.
             self.store.record_llm_usage(
                 provider=provider_name, model=model_name, task=task, input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens, cost_usd=result.cost_usd, lead_id=lead_id)
+            if json_mode or json_schema:
+                try:
+                    result.data = _parse_json(result.text)
+                except (ValueError, TypeError) as e:
+                    if result.truncated and max_tokens < 16000:
+                        log.warning(f"{provider_name}:{model_name} reply cut off at {max_tokens} tokens; retrying with more room")
+                        return self.complete(prompt, task=task, system=system, max_tokens=min(16000, max_tokens * 3),
+                                             temperature=temperature, json_mode=json_mode, json_schema=json_schema,
+                                             lead_id=lead_id, provider=provider_name, model=model_name)
+                    log.warning(f"{provider_name}:{model_name} returned invalid JSON for '{task}': {e}")
+                    last_error = e
+                    continue
             EventBus().emit("llm.usage", {
                 "provider": provider_name, "model": model_name, "task": task, "lead_id": lead_id,
                 "input_tokens": result.input_tokens, "output_tokens": result.output_tokens,

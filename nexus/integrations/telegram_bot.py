@@ -57,7 +57,7 @@ class TelegramBot:
 
         if self.bus:
             self.bus.register_channel("telegram", self._receive_bus_message)
-        for pattern in ("lead.*", "control.*"):
+        for pattern in ("lead.*", "control.*", "report.*"):
             self.events.on(pattern, self._on_event)
 
     # ── helpers ──────────────────────────────────────────────────
@@ -143,15 +143,33 @@ class TelegramBot:
         asyncio.run_coroutine_threadsafe(self._send_to_all(text, buttons, silent), loop)
         return True
 
+    @staticmethod
+    def _chunks(text: str, limit: int = 3900) -> List[str]:
+        """Telegram caps a message at 4096 chars: split on line breaks."""
+        parts, current = [], ""
+        for line in text.split("\n"):
+            while len(line) > limit:
+                parts.append(line[:limit])
+                line = line[limit:]
+            if len(current) + len(line) + 1 > limit:
+                parts.append(current)
+                current = ""
+            current = f"{current}\n{line}" if current else line
+        if current:
+            parts.append(current)
+        return parts or [""]
+
     async def _send_to_all(self, text: str, buttons, silent: bool):
         markup = self._keyboard(buttons or [])
+        pieces = self._chunks(text)
         for chat_id in self.alert_recipients():
-            try:
-                await self._bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML",
-                                             reply_markup=markup, disable_notification=silent,
-                                             disable_web_page_preview=True)
-            except Exception as e:
-                log.warning(f"Telegram alert to {chat_id} failed: {e}")
+            for i, piece in enumerate(pieces):
+                try:
+                    await self._bot.send_message(chat_id=chat_id, text=piece, parse_mode="HTML",
+                                                 reply_markup=markup if i == len(pieces) - 1 else None,
+                                                 disable_notification=silent, disable_web_page_preview=True)
+                except Exception as e:
+                    log.warning(f"Telegram alert to {chat_id} failed: {e}")
 
     # ── cross-channel results from the message bus ──────────────
 

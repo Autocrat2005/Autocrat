@@ -57,6 +57,18 @@ def market_offset(market: str, default: int) -> int:
     return default
 
 
+# Template leftovers like [first name] or {company}: never send these to a real person.
+PLACEHOLDER_RE = re.compile(r"\[[^\]]{1,30}\]|\{[^}]{1,30}\}|\b(?:first name|your name|company name)\b", re.I)
+
+POSTAL_MARKETS = ("us", "usa", "united states", "us east", "us west", "canada", "toronto", "vancouver")
+
+
+def needs_postal(market: str) -> bool:
+    """US (CAN-SPAM) and Canada (CASL) require the sender's postal address in commercial email."""
+    key = (market or "").strip().lower()
+    return any(key == m or key.startswith(m + " ") or m in key.split(", ") for m in POSTAL_MARKETS)
+
+
 QUOTE_MARKERS = [re.compile(p, re.I | re.M) for p in (
     r"^On .+wrote:\s*$", r"^-{2,}\s*Original Message", r"^From:\s.+$", r"^Sent from my ",
 )]
@@ -195,6 +207,8 @@ class EmailWorker:
         self.poll_seconds = float(get_secret("EMAIL_POLL_SECONDS", "120") or 120)
         self.optout = get_secret("EMAIL_OPTOUT_LINE", "p.s. if this isn't relevant, just reply 'no' and i won't email again")
         self.signature = get_secret("EMAIL_SIGNATURE", "Yash")
+        self.postal = (get_secret("EMAIL_POSTAL_ADDRESS", "") or "").strip()
+        self._postal_warned = False
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -258,8 +272,18 @@ class EmailWorker:
                 minutes=market_offset(lead.get("market") or "", self.offset))
             if not self._in_hours(their_now):
                 continue
+            if PLACEHOLDER_RE.search(out["draft"] or ""):
+                log.warning(f"Email: draft {out['id']} has a template placeholder; never sending it")
+                continue
+            if needs_postal(lead.get("market") or "") and not self.postal:
+                if not self._postal_warned:
+                    log.warning("Email: US/Canada openers held until EMAIL_POSTAL_ADDRESS is set (CAN-SPAM/CASL)")
+                    self._postal_warned = True
+                continue
             subject, body = split_subject(out["draft"])
             body = f"{body}\n\n{self.signature}\n\n{self.optout}"
+            if self.postal:  # CAN-SPAM (US) wants a physical postal address on commercial email
+                body = f"{body}\n{self.postal}"
             if RuntimeControl().is_dry_run:
                 continue  # dry run: the Telegram alert already shows the draft; nothing is sent
             try:

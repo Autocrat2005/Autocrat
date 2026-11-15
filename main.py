@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from nexus.core.secrets import get_secret, load_env
 
-load_env()  # .env before anything reads configuration
+# .env wins over stale machine-wide vars (e.g. another tool's ANTHROPIC_API_KEY)
+load_env(override=True)
 
 from nexus.core.engine import NexusEngine
 from nexus.core.config import Config

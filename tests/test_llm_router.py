@@ -132,3 +132,31 @@ def test_deepseek_provider_parses_openai_style_response(monkeypatch):
     assert captured["body"]["response_format"] == {"type": "json_object"}
     assert captured["headers"]["Authorization"] == "Bearer k"
     assert (result.input_tokens, result.output_tokens, result.text) == (12, 5, '{"ok": true}')
+
+
+def test_invalid_json_is_costed_then_falls_through(store):
+    class Broken(FakeProvider):
+        def complete(self, **kw):
+            r = super().complete(**kw)
+            r.text = '{"a": 1 "b": 2}'
+            return r
+
+    router = make_paced_router(store, [Broken("anthropic"), FakeProvider("deepseek")])
+    result = router.complete("x", json_mode=True)
+    assert result.provider == "deepseek" and result.data == {"score": 8}
+    assert store.month_spend()["calls"] == 2                     # the broken reply was still recorded
+
+
+def test_truncated_json_retries_with_more_room(store):
+    class CutOff(FakeProvider):
+        def complete(self, model, prompt, max_tokens=1024, **kw):
+            r = super().complete(model=model, prompt=prompt, max_tokens=max_tokens, **kw)
+            if max_tokens < 3000:
+                r.text, r.truncated = '{"score": ', True
+            return r
+
+    p = CutOff("anthropic")
+    router = make_paced_router(store, [p])
+    router.config.set("llm", "provider_budgets", {})
+    assert router.complete("x", json_mode=True, max_tokens=1000).data == {"score": 8}
+    assert p.calls == 2

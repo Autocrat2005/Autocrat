@@ -67,3 +67,12 @@ def test_quiet_hours_ist():
     late = datetime(2026, 11, 15, 18, 0, tzinfo=timezone.utc)   # 23:30 IST
     day = datetime(2026, 11, 15, 6, 0, tzinfo=timezone.utc)     # 11:30 IST
     assert in_quiet_hours("23-8", late) and not in_quiet_hours("23-8", day)
+
+
+def test_reports_become_alerts_and_long_messages_split():
+    alert = build_alert({"event": "report.opportunities", "data": {"text": "🧭 pains <b>"}})
+    assert alert["priority"] == "orange" and "&lt;b&gt;" in alert["text"]
+    long = "\n".join("line %d %s" % (i, "x" * 80) for i in range(200))
+    parts = TelegramBot._chunks(long)
+    assert len(parts) > 1 and all(len(p) <= 3900 for p in parts)
+    assert "\n".join(parts) == long
