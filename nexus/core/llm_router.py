@@ -136,7 +136,7 @@ class AnthropicProvider:
         # `temperature` is accepted for interface parity but not sent. Haiku 5.5 thinks
         # adaptively by default (thinking bills as output tokens); `effort` is the cost
         # lever, default "low" for this budget (llm.anthropic_effort).
-        effort = Config().get("llm", "anthropic_effort", default="low")
+        effort = (Config().get("llm", "anthropic_effort_by_model", default={}) or {}).get(model)             or Config().get("llm", "anthropic_effort", default="low")
         kwargs: Dict[str, Any] = {
             "model": model, "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
@@ -391,10 +391,23 @@ class LLMRouter:
 
     # ── calls ────────────────────────────────────────────────────
 
+    def task_refusal(self, task: str) -> Optional[str]:
+        """Why this task may not spend more right now (None = OK). Set llm.task_budgets.<task> in USD."""
+        budget = (self._cfg("task_budgets", {}) or {}).get(task)
+        if budget is None:
+            return None
+        spent = self.store.spend_since(self._window_start(), task=task)["cost_usd"]
+        if spent >= float(budget):
+            return f"{task} budget reached (${spent:.2f} of ${float(budget):.2f})"
+        return None
+
     def complete(self, prompt: str, *, task: str = "default", system: str = "",
                  max_tokens: int = 1024, temperature: float = 0.2, json_mode: bool = False,
                  json_schema: Optional[Dict[str, Any]] = None, lead_id: Optional[str] = None,
                  provider: Optional[str] = None, model: Optional[str] = None) -> LLMResult:
+        capped = self.task_refusal(task)
+        if capped:
+            raise BudgetExceeded(capped)
         if provider:
             chain = [(provider, model or self.route(task)[1])]
         else:

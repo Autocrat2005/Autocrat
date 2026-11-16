@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import email
 import imaplib
+import random
 import re
 import smtplib
 import ssl
@@ -138,7 +139,7 @@ def is_bounce_sender(addr: str) -> bool:
     return any(local.startswith(b) for b in BOUNCE_SENDERS)
 
 
-def compute_cap(store, base: int, cap_max: int = 40, step: int = 3,
+def compute_cap(store, base: int, cap_max: int = 60, step: int = 3,
             now_ts: Optional[float] = None) -> Dict[str, Any]:
     """Today's cap: base + step per clean sending day (last 14), back to base if bounces spike."""
     now_ts = now_ts or time.time()
@@ -200,7 +201,9 @@ def strike_link(lead: Dict[str, Any]) -> str:
     """wa.me link with a short note, when we know their mobile. You press send; no automation, no tokens."""
     from urllib.parse import quote
     from nexus.integrations.wa_links import normalize
-    phone = (lead.get("data") or {}).get("phone") or (lead.get("contact") if (lead.get("contact") or "").startswith("+") else "")
+    data = lead.get("data") or {}
+    phone = data.get("phone") or data.get("call_phone") or \
+        (lead.get("contact") if (lead.get("contact") or "").startswith("+") else "")
     number = normalize(phone or "")
     if not number:
         return ""
@@ -212,6 +215,21 @@ def strike_link(lead: Dict[str, Any]) -> str:
 QUOTE_MARKERS = [re.compile(p, re.I | re.M) for p in (
     r"^On .+wrote:\s*$", r"^-{2,}\s*Original Message", r"^From:\s.+$", r"^Sent from my ",
 )]
+
+
+# A bare "no" is NOT here on purpose: it can be the good answer to "would it be a bad idea to...?", so the
+# reply-writer reads it in context instead.
+OPT_OUT_BODY = re.compile(r"^\W*(no thanks?|no thank you|stop|unsubscribe|remove me|remove|opt[ -]?out|"
+                          r"not interested|take me off( (your|the|this) list)?|do not (contact|email) me)\W*$", re.I)
+OPT_OUT_SUBJECT = re.compile(r"^\s*(re:\s*)*(unsubscribe|remove me|opt[ -]?out)\b", re.I)
+
+
+def is_opt_out(subject: str, text: str) -> bool:
+    """A bare "no" / "unsubscribe" (in the body, or as the subject of an otherwise empty mail)."""
+    body = (text or "").strip()
+    if body and len(body) <= 60 and OPT_OUT_BODY.match(body):
+        return True
+    return bool(OPT_OUT_SUBJECT.match(subject or "")) and len(body) <= 60
 
 
 def split_subject(draft: str, default: str = "quick question") -> tuple[str, str]:
@@ -268,13 +286,18 @@ def active_worker() -> Optional["EmailWorker"]:
 class EmailTransport:
     """SMTP + IMAP for one mailbox (e.g. Zoho on your cold domain)."""
 
-    def __init__(self):
-        self.address = get_secret("EMAIL_ADDRESS")
-        self.password = get_secret("EMAIL_PASSWORD")
-        self.smtp_host = get_secret("EMAIL_SMTP_HOST", "smtp.zoho.com")
-        self.smtp_port = int(get_secret("EMAIL_SMTP_PORT", "465") or 465)
-        self.imap_host = get_secret("EMAIL_IMAP_HOST", "imap.zoho.com")
-        self.from_name = get_secret("EMAIL_FROM_NAME", "Yash")
+    def __init__(self, prefix: str = "EMAIL"):
+        # Extra inboxes use their own prefix (EMAIL2_ADDRESS, EMAIL2_PASSWORD, EMAIL2_FROM_NAME) and share
+        # the main mailbox's servers unless they set their own.
+        own = lambda k: get_secret(f"{prefix}_{k}") if prefix != "EMAIL" else None  # noqa: E731
+        self.prefix = prefix
+        self.address = get_secret(f"{prefix}_ADDRESS")
+        self.password = get_secret(f"{prefix}_PASSWORD")
+        self.smtp_host = own("SMTP_HOST") or get_secret("EMAIL_SMTP_HOST", "smtp.zoho.com")
+        self.smtp_port = int(own("SMTP_PORT") or get_secret("EMAIL_SMTP_PORT", "465") or 465)
+        self.imap_host = own("IMAP_HOST") or get_secret("EMAIL_IMAP_HOST", "imap.zoho.com")
+        guess = (self.address or "").split("@")[0].split(".")[0].title()
+        self.from_name = (own("FROM_NAME") or guess) if prefix != "EMAIL" else get_secret("EMAIL_FROM_NAME", "Yash")
 
     @property
     def configured(self) -> bool:
@@ -290,6 +313,8 @@ class EmailTransport:
         msg["Subject"] = subject
         msg_id = make_msgid(domain=self.address.split("@")[-1])
         msg["Message-ID"] = msg_id
+        # One-click opt-out in mail clients; a reply with that subject is honoured as do-not-contact.
+        msg["List-Unsubscribe"] = f"<mailto:{self.address}?subject=unsubscribe>"
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = (references + " " + in_reply_to).strip()
@@ -394,7 +419,10 @@ class EmailWorker:
         self.store = store
         self.closer = closer          # WhatsAppCloser instance used as the shared sales brain
         self.alerts = alerts          # AlertFanout
-        self.transport = transport or EmailTransport()
+        if transport is None:
+            from nexus.integrations.mailboxes import build_transport
+            transport = build_transport(store)      # one mailbox, or a pool of them (EMAIL_EXTRA_ACCOUNTS)
+        self.transport = transport
         self.sleep = sleep
         self.auto_send = env_bool("EMAIL_AUTO_SEND", False)
         self.daily_cap = int(get_secret("EMAIL_DAILY_CAP", "20") or 20)
@@ -402,12 +430,17 @@ class EmailWorker:
         self.offset = int(get_secret("EMAIL_UTC_OFFSET_MINUTES", "240") or 240)
         self.poll_seconds = float(get_secret("EMAIL_POLL_SECONDS", "120") or 120)
         self.optout = get_secret("EMAIL_OPTOUT_LINE", "p.s. if this isn't relevant, just reply 'no' and i won't email again")
-        self.signature = get_secret("EMAIL_SIGNATURE", "Yash")
+        self.sender_name = get_secret("EMAIL_SIGNATURE", "Yash") or "Yash"
+        self.company = (get_secret("EMAIL_COMPANY", "Windrose Labs") or "").strip()
+        self.site = (get_secret("EMAIL_SITE", "") or "").strip()
+        # Cold mail signs with the name and company only; the site link appears once they've replied (sign(True)).
+        self.signature = f"{self.sender_name}\n{self.company}" if self.company else self.sender_name
+        self.rng = random.Random()
         self.postal = (get_secret("EMAIL_POSTAL_ADDRESS", "") or "").strip()
         self.wa_number = (get_secret("WHATSAPP_BUSINESS_NUMBER", "") or "").strip()
         self.wa_markets = [m.strip().lower() for m in
                            (get_secret("EMAIL_WHATSAPP_LINK_MARKETS", "UAE") or "UAE").split(",") if m.strip()]
-        self.cap_max = int(get_secret("EMAIL_CAP_MAX", "40") or 40)
+        self.cap_max = int(get_secret("EMAIL_CAP_MAX", "60") or 60)
         self.cap_step = int(get_secret("EMAIL_CAP_STEP", "3") or 3)
         self.followups_on = (get_secret("EMAIL_FOLLOWUPS", "1") or "1").lower() in ("1", "true", "yes")
         self.followup_days = [float(x) for x in (get_secret("EMAIL_FOLLOWUP_DAYS", "3,4") or "3,4").split(",") if x.strip()]
@@ -442,6 +475,10 @@ class EmailWorker:
                 log.warning(f"Email tick failed: {e}")
             self._stop.wait(self.poll_seconds)
 
+    def sign(self, reply: bool = False) -> str:
+        """Sign-off. Once they've replied, the company site is added so they can look us up."""
+        return f"{self.signature} · {self.site}" if (reply and self.site and self.company) else self.signature
+
     def tick(self, now: Optional[datetime] = None) -> Dict[str, int]:
         if RuntimeControl().killed:
             return {"sent": 0, "replied": 0}
@@ -454,8 +491,10 @@ class EmailWorker:
         result = {"followups_staged": staged, "replied": self.handle_replies(), "sent": self.send_openers(now)}
         from nexus.integrations import deals, precall
         for name, fn in (("reminders", self.meeting_reminders), ("nudged", self.nudge_quiet_conversations),
+                         ("wa_touch", self.stage_whatsapp_touch),
                          ("debriefs", lambda: deals.ask_meeting_outcomes(self)),
                          ("chased", lambda: deals.chase_payments(self)),
+                         ("post_sale", lambda: deals.post_sale_followups(self)),
                          ("packs", lambda: precall.prepare_packs(self)),
                          ("brief", self.maybe_daily_brief)):
             try:
@@ -474,7 +513,7 @@ class EmailWorker:
         from nexus.integrations import booking
         start = datetime.fromisoformat(decision["meeting"].replace("Z", "+00:00"))
         who = lead.get("company") or lead.get("name") or to
-        return booking.ics_invite(start, summary=f"{self.signature} x {who}", link=decision.get("meeting_link", ""),
+        return booking.ics_invite(start, summary=f"{self.sender_name} x {who}", link=decision.get("meeting_link", ""),
                                   organizer=getattr(self.transport, "address", "") or "", attendee=to,
                                   minutes=int(get_secret("MEETING_MINUTES", "20") or 20), uid=f"{lead['id']}-{start:%Y%m%d%H%M}")
 
@@ -488,20 +527,35 @@ class EmailWorker:
             lead = self.store.get_lead(m["lead_id"]) or {}
             who = lead.get("company") or lead.get("name") or lead.get("contact") or "them"
             mine = booking.describe(m["start"], int(get_secret("OWNER_UTC_OFFSET_MINUTES", "330") or 330))
+            from nexus.integrations.deals import email_of
+            # The day before: one "still good for tomorrow?" so no-shows surface early.
+            day_key = f"meeting:confirm24:{m['lead_id']}:{m['start']:%Y%m%d%H%M}"
+            if 18 * 60 < mins <= 26 * 60 and not self.store.kv_get(day_key) and email_of(lead) \
+                    and not RuntimeControl().is_dry_run and not RuntimeControl().killed:
+                self.store.kv_set(day_key, "1")
+                thread = self._thread_of(lead["id"])
+                theirs = booking.describe(m["start"], int(m.get("their_offset") or 0))
+                try:
+                    self.transport.send(email_of(lead), f"Re: {thread['subject'] or 'our call'}".replace("Re: Re:", "Re:"),
+                                        f"quick one, still good for {theirs} your time tomorrow? same link: {m['link']}"
+                                        f"\n\n{self.sign(True)}",
+                                        in_reply_to=thread["last_id"], references=thread["message_id"])
+                    sent += 1
+                except Exception as e:
+                    log.info(f"day-before confirmation failed: {e}")
             for window, label in ((65, "60"), (12, "10")):
                 key = f"meeting:remind{label}:{m['lead_id']}:{m['start']:%Y%m%d%H%M}"
                 if 0 < mins <= window and not self.store.kv_get(key):
                     self.store.kv_set(key, "1")
                     self.alerts.notify(f"⏰ Call with {who} in {int(mins)} min ({mine}) · {m['link']}", "red")
                     sent += 1
-                    from nexus.integrations.deals import email_of
                     if label == "60" and email_of(lead) and not RuntimeControl().is_dry_run \
                             and not RuntimeControl().killed:
                         thread = self._thread_of(lead["id"])
                         theirs = booking.describe(m["start"], int(m.get("their_offset") or 0))
                         try:
                             self.transport.send(email_of(lead), f"Re: {thread['subject'] or 'our call'}".replace("Re: Re:", "Re:"),
-                                                f"quick reminder, we're on at {theirs} your time: {m['link']}\n\n{self.signature}",
+                                                f"quick reminder, we're on at {theirs} your time: {m['link']}\n\n{self.sign(True)}",
                                                 in_reply_to=thread["last_id"], references=thread["message_id"])
                         except Exception as e:
                             log.info(f"meeting reminder email failed: {e}")
@@ -526,6 +580,35 @@ class EmailWorker:
             events = self.store.lead_events(lead_id)
             talk = [e for e in events if e["type"] in ("message_in", "message_out")]
             nudges = sum(1 for e in events if e["type"] == "message_out" and (e.get("payload") or {}).get("kind") == "nudge")
+            # "not now, try me in January": stay silent until that date, then one check-back (template, no AI cost).
+            snoozes = [e for e in events if e["type"] == "snooze"]
+            if snoozes:
+                until = float((snoozes[-1].get("payload") or {}).get("until") or 0)
+                checked = any(e["type"] == "message_out" and (e.get("payload") or {}).get("kind") == "checkback"
+                              and e["id"] > snoozes[-1]["id"] for e in events)
+                replied_since = any(e["type"] == "message_in" and e["id"] > snoozes[-1]["id"] for e in events)
+                if not replied_since and (now.timestamp() < until or checked):
+                    continue           # still waiting for their date, or already checked back once: leave it
+                if not checked and not replied_since:
+                    their_now = now + timedelta(minutes=market_offset(lead.get("market") or "", self.offset))
+                    if not self._in_hours(their_now):
+                        continue
+                    from nexus.integrations.deals import first_name
+                    hi = f"hey {first_name(lead)}," if first_name(lead) else "hey,"
+                    body = f"{hi} you mentioned to check back around now. still worth a quick look, or should i leave it?"
+                    thread = self._thread_of(lead_id)
+                    subject = thread["subject"] if thread["subject"].lower().startswith("re:") else f"Re: {thread['subject'] or 'quick one'}"
+                    try:
+                        msg_id = self.transport.send(email_of(lead), subject, f"{body}\n\n{self.sign(True)}",
+                                                     in_reply_to=thread["last_id"], references=thread["message_id"])
+                    except Exception as e:
+                        log.info(f"check-back send failed for {lead_id}: {e}")
+                        continue
+                    self.store.log_event(lead_id, "message_out", {"text": body, "subject": subject, "message_id": msg_id,
+                                                                  "channel": "email", "kind": "checkback"}, actor="closer")
+                    self.alerts.notify(f"🔁 Checked back with {lead.get('company') or email_of(lead)}, as they asked.", "orange")
+                    sent += 1
+                    continue
             if not talk or talk[-1]["type"] != "message_out" or nudges >= 2:
                 continue
             wait = hours if nudges == 0 else hours + 72
@@ -557,7 +640,7 @@ class EmailWorker:
             thread = self._thread_of(lead_id)
             subject = thread["subject"] if thread["subject"].lower().startswith("re:") else f"Re: {thread['subject'] or 'quick one'}"
             try:
-                msg_id = self.transport.send(email_of(lead), subject, f"{draft}\n\n{self.signature}",
+                msg_id = self.transport.send(email_of(lead), subject, f"{draft}\n\n{self.sign(True)}",
                                              in_reply_to=thread["last_id"], references=thread["message_id"])
             except Exception as e:
                 log.info(f"nudge send failed for {lead_id}: {e}")
@@ -592,7 +675,15 @@ class EmailWorker:
         return f"or if whatsapp is easier: {click_to_chat(self.wa_number, text)}"
 
     def cap_status(self, now_ts: Optional[float] = None) -> Dict[str, Any]:
-        return compute_cap(self.store, self.daily_cap, self.cap_max, self.cap_step, now_ts)
+        cap = compute_cap(self.store, self.daily_cap, self.cap_max, self.cap_step, now_ts)
+        pool = self.transport if hasattr(self.transport, "extra_capacity") else None
+        if pool:       # more inboxes: each has its own limit, and the day's total is their sum
+            pool.primary_cap, pool.reset = cap["cap"], cap.get("bounce_rate", 0) > 0.05
+            pool.day = self._local_now(None).strftime("%Y-%m-%d")
+            cap["mailboxes"] = pool.status()
+            cap["cap"] += pool.extra_capacity()
+            cap["note"] = f"{cap.get('note', '')} · {len(pool.boxes)} inboxes".strip(" ·")
+        return cap
 
     # ── follow-ups ───────────────────────────────────────────────
 
@@ -614,7 +705,22 @@ class EmailWorker:
             return False
         return not any(e["type"] in ("message_in", "bounce") for e in self.store.lead_events(lead["id"]))
 
+    def followup_template(self, lead: Dict[str, Any], n: int) -> str:
+        """Follow-up 1 when we looked at their site: offer what we noticed. Free (no AI call), and a 'yes'
+        hands the reply-writer the list to send."""
+        check = (lead.get("data") or {}).get("site_check") or {}
+        findings = check.get("findings") or []
+        if n != 1 or len(findings) < 2:
+            return ""
+        from nexus.integrations.site_audit import domain_of
+        where = domain_of(check.get("url") or "") or "your site"
+        return (f"i actually jotted down {min(3, len(findings))} quick things i noticed on {where} while i was "
+                "looking at it. takes a minute to read. want me to send them over?")
+
     def draft_followup(self, lead: Dict[str, Any], n: int, opener: str) -> str:
+        templated = self.followup_template(lead, n)
+        if templated:
+            return templated
         from nexus.integrations.whatsapp_closer import humanize
         voice = getattr(self.closer, "voice", "") or ""
         system = (
@@ -651,6 +757,9 @@ class EmailWorker:
                 lead = self.store.get_lead(r[0])
                 if not self._quiet(lead):
                     continue
+                if any(e["type"] == "auto_reply" and now_ts - float(e["ts"]) < 5 * 86400
+                       for e in self.store.lead_events(lead["id"])):
+                    continue   # out of office: wait until they're likely back
                 thread = self._thread_of(lead["id"])
                 if not thread["message_id"]:
                     continue
@@ -679,6 +788,80 @@ class EmailWorker:
         start, end = (int(x) for x in self.hours.split("-", 1))
         return start <= local.hour < end
 
+    def source_scores(self) -> Dict[str, float]:
+        """One draw per source from its reply record (Thompson sampling): sources that earn replies get
+        the day's sends first, and untested sources still get tried."""
+        c = self.store._conn()
+        sent = dict(c.execute("SELECT l.source, COUNT(DISTINCT l.id) FROM leads l JOIN outreach o ON o.lead_id=l.id"
+                              " WHERE o.status='sent' GROUP BY l.source").fetchall())
+        replied = dict(c.execute("SELECT l.source, COUNT(DISTINCT l.id) FROM leads l JOIN lead_events e ON e.lead_id=l.id"
+                                 " WHERE e.type='message_in' GROUP BY l.source").fetchall())
+        return {s: self.rng.betavariate(replied.get(s, 0) + 1, max(0, n - replied.get(s, 0)) + 1) for s, n in sent.items()}
+
+    def prioritise(self, queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Warm threads first, then people who are hiring right now, then the best source and the clearest pain."""
+        from nexus.integrations.telegram_alerts import is_hiring_post
+        scores = self.source_scores()
+
+        def rank(out: Dict[str, Any]):
+            if (out.get("kind") or "").startswith("followup"):
+                return (0, 0.0)
+            lead = self.store.get_lead(out["lead_id"]) or {}
+            data = lead.get("data") or {}
+            if is_hiring_post(lead):
+                return (1, 0.0)
+            source = lead.get("source") or ""
+            if source not in scores:
+                scores[source] = self.rng.betavariate(1, 1)
+            pain = min(3, len((data.get("site_check") or {}).get("findings") or []))
+            reviews = str(data.get("reviews") or "").replace(",", "")
+            pain += 1 if reviews.isdigit() and int(reviews) >= 30 else 0
+            return (2, -(scores[source] + 0.05 * pain))
+        return sorted(queue, key=rank)
+
+    def stage_whatsapp_touch(self, now: Optional[datetime] = None) -> int:
+        """A second channel, sent by you: emailed, silent for WA_TOUCH_AFTER_DAYS (5), and we know their
+        mobile → a short WhatsApp draft shows up in /wa, at most WA_TOUCH_PER_DAY (10). Template, no AI cost."""
+        per_day = int(get_secret("WA_TOUCH_PER_DAY", "10") or 0)
+        if per_day <= 0 or RuntimeControl().killed:
+            return 0
+        from nexus.core.store import AlreadyContacted, Suppressed
+        from nexus.integrations.deals import first_name
+        from nexus.integrations.wa_links import normalize
+        now = now or datetime.now(timezone.utc)
+        after = float(get_secret("WA_TOUCH_AFTER_DAYS", "5") or 5)
+        day_key = f"wa_touch:{self._local_now(now):%Y-%m-%d}"
+        done = int(self.store.kv_get(day_key) or 0)
+        if done >= per_day:
+            return 0
+        rows = self.store._conn().execute(
+            "SELECT o.lead_id FROM outreach o JOIN leads l ON l.id=o.lead_id WHERE o.channel='email'"
+            " AND o.kind='first_touch' AND o.status='sent' AND o.sent_at <= ? AND l.state IN ('SENT','OPENED')"
+            " AND NOT EXISTS (SELECT 1 FROM outreach w WHERE w.lead_id=o.lead_id AND w.channel='whatsapp')"
+            " ORDER BY o.sent_at LIMIT 200", (now.timestamp() - after * 86400,)).fetchall()
+        staged = 0
+        for (lead_id,) in rows:
+            if done + staged >= per_day:
+                break
+            lead = self.store.get_lead(lead_id)
+            market = (lead.get("market") or "").strip().lower()
+            number = normalize(str((lead.get("data") or {}).get("phone") or ""))
+            if not number or not any(market == m or market.startswith(m + " ") for m in self.wa_markets) \
+                    or not self._quiet(lead):
+                continue
+            hi = f"hi {first_name(lead)}," if first_name(lead) else "hi,"
+            draft = (f"{hi} {self.sender_name.lower()} here from {(self.company or 'our studio').lower()}. i sent you a "
+                     "quick email a few days ago about how fast your whatsapp enquiries get answered. easier to chat here?")
+            try:
+                self.store.stage_outreach(lead_id, "whatsapp", draft, kind="wa_touch", contact=f"+{number}",
+                                          actor="followup")
+                staged += 1
+            except (AlreadyContacted, Suppressed, ValueError) as e:
+                log.info(f"No WhatsApp second touch for {lead_id}: {e}")
+        if staged:
+            self.store.kv_set(day_key, str(done + staged))
+        return staged
+
     def send_openers(self, now: Optional[datetime] = None) -> int:
         local = self._local_now(now)
         day_key = f"email:sent:{local.strftime('%Y-%m-%d')}"
@@ -686,7 +869,7 @@ class EmailWorker:
         queue = self.store.list_outreach("approved", channel="email")
         if self.auto_send:
             queue += self.store.list_outreach("staged", channel="email")
-        queue.sort(key=lambda o: 0 if (o.get("kind") or "").startswith("followup") else 1)  # warm threads first
+        queue = self.prioritise(queue)
         cap = self.cap_status()["cap"]
         sent = 0
         for out in queue:
@@ -711,6 +894,14 @@ class EmailWorker:
                 continue
             followup = (out.get("kind") or "").startswith("followup")
             in_reply_to = references = ""
+            if not followup:
+                from nexus.integrations.mx_check import has_mail_server
+                if not has_mail_server(to, self.store):    # a dead domain would only bounce and hold the limit down
+                    try:
+                        self.store.reject_outreach(out["id"], actor="email-auto", reason="domain can't receive email")
+                    except Exception:
+                        pass
+                    continue
             if followup:
                 if not self._quiet(lead):   # they replied, said no or bounced since: never bump them
                     try:
@@ -764,9 +955,10 @@ class EmailWorker:
     def handle_bounce(self, mail: Dict[str, Any]) -> bool:
         """Match a delivery failure to the lead we emailed; never write to that address again."""
         own = (getattr(self.transport, "address", "") or "").lower()
+        ours = getattr(self.transport, "addresses", None) or {own}
         text = f"{mail.get('dsn', '')}\n{mail.get('body', '')}"
         for addr in dict.fromkeys(a.lower().strip(".") for a in EMAIL_RE.findall(text)):
-            if addr == own or is_bounce_sender(addr):
+            if addr in ours or is_bounce_sender(addr):
                 continue
             key = contact_key("email", addr)
             lead = self.store.find_lead_by_contact(key)
@@ -854,8 +1046,32 @@ class EmailWorker:
                 self.store.kv_set(key, "auto")
                 continue
             text = strip_quoted(mail["body"])[:4000]
+            who = lead.get("company") or lead.get("name") or mail["from"]
+            if lead["state"] != "DNC" and is_opt_out(mail.get("subject", ""), text):
+                # "no" / "unsubscribe" (also the one-click header's empty mail): never write again. No AI call.
+                self.store.log_event(lead["id"], "message_in", {"text": (text or mail.get("subject", ""))[:500],
+                                                                "intent": "stop", "channel": "email"}, actor="prospect")
+                try:
+                    self.store.transition(lead["id"], "DNC", actor="email", reason="opted out")
+                except Exception as e:
+                    log.info(f"opt-out: {lead['id']} stays {lead['state']} ({e})")
+                self.store.kv_set(key, "opt-out")
+                if not mail.get("seen"):
+                    self.transport.mark_seen(mail["uid"])
+                self.alerts.notify(f"🚫 {who} opted out: marked do-not-contact, nothing more will be sent.", "orange")
+                handled += 1
+                continue
             if not text:
+                # Nothing readable (an image, a signature only): never drop it silently. Stop the follow-ups
+                # and hand it to the founder.
+                self.store.log_event(lead["id"], "message_in", {"text": "(replied with no text)", "channel": "email"},
+                                     actor="prospect")
+                if lead["state"] in ("SENT", "OPENED"):
+                    self.store.transition(lead["id"], "REPLIED", actor="email")
                 self.store.kv_set(key, "empty")
+                self.alerts.notify(f"📩 {who} replied with no readable text (maybe an image or attachment). "
+                                   f"Open it in your inbox: your move.", "red")
+                handled += 1
                 continue
             if mail.get("seen") and getattr(self.transport, "answered_by_me", None) and \
                     self.transport.answered_by_me(mail.get("message_id", "")):
@@ -872,7 +1088,8 @@ class EmailWorker:
                 continue
             transcript = self.transcript_for(lead["id"], text)
             decision = self.closer.decide(transcript, lead_id=lead["id"], channel="email")
-            if not decision.get("reply") and decision.get("intent") not in ("stop", "not_interested"):
+            if not decision.get("reply") and not decision.get("held") \
+                    and decision.get("intent") not in ("stop", "not_interested"):
                 # We contacted them; silence loses sales. Ask once more, insisting on an answer.
                 retry = self.closer.decide(transcript + "\n\n(Note: this is a prospect we emailed. Write a reply.)",
                                            lead_id=lead["id"], channel="email")
@@ -886,7 +1103,7 @@ class EmailWorker:
             if reply and RuntimeControl().is_dry_run:
                 outcome = f"[dry run] would answer:\n{reply}"
             elif reply and not RuntimeControl().killed:
-                body = f"{reply}\n\n{self.signature}"
+                body = f"{reply}\n\n{self.sign(True)}"
                 self.sleep(min(120.0, 20 + len(text) / 10))   # don't reply in 2 seconds
                 try:
                     ics = self.invite_for(lead, decision, mail["from"])
@@ -898,10 +1115,15 @@ class EmailWorker:
                     outcome = f"auto-replied:\n{reply}"
                 except Exception as e:
                     outcome = f"reply FAILED ({e}); answer them yourself:\n{reply}"
+            elif decision.get("held"):
+                outcome = ("NOT SENT, needs you: the draft broke a rule (" + "; ".join(decision["held"])[:300]
+                           + f").\nDraft to fix and send yourself:\n{decision.get('draft', '')}")
             elif decision["intent"] in ("stop", "not_interested"):
                 outcome = "marked do-not-contact"
             else:
                 outcome = "no auto-reply: your move"
+            if decision.get("model") == "strong" and outcome.startswith("auto-replied"):
+                outcome = outcome.replace("auto-replied", "auto-replied (stronger model)", 1)
             log.info(f"📩 reply from {mail['from']} ({decision.get('intent')}): {outcome.splitlines()[0][:120]}")
             sender = parseaddr(mail["from"])[1].lower() or mail["from"].lower()
             fresh = self.store.get_lead(lead["id"]) or lead
@@ -914,7 +1136,7 @@ class EmailWorker:
                 from nexus.integrations.deals import money_buttons
                 buttons = money_buttons(self.store, fresh) or None
             self.alerts.notify(reply_alert(fresh, mail["from"], text, decision, outcome),
-                               "red" if decision.get("hot") else "orange", buttons=buttons)
+                               "red" if (decision.get("hot") or decision.get("held")) else "orange", buttons=buttons)
             self.store.kv_set(key, "replied")
             if not mail.get("seen"):
                 self.transport.mark_seen(mail["uid"])

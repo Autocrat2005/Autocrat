@@ -63,6 +63,9 @@ DEFAULT_CONFIG = {
             # Prospect-facing text never falls back to the small local model.
             "copy": ["anthropic:claude-haiku-5-5", "deepseek:deepseek-flash"],
             "closer": ["anthropic:claude-haiku-5-5", "deepseek:deepseek-flash"],
+            # The few replies that decide a deal (price, objections, "how do we start") get a
+            # stronger model, inside its own small monthly cap (task_budgets below).
+            "closer_hot": "anthropic:claude-sonnet-5-5",
             "local": "ollama:llama3.2:3b",
         },
         # USD per 1M tokens. VERIFY on the providers' price pages (third-party
@@ -70,10 +73,15 @@ DEFAULT_CONFIG = {
         # cache_read / cache_write apply to Anthropic prompt caching.
         "pricing": {
             "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+            "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_read": 0.10, "cache_write": 2.50},
             "deepseek-flash": {"input": 0.30, "output": 1.20},
         },
         # Prepaid credit per provider, paced over a rolling 30-day window.
         "provider_budgets": {"anthropic": 7.8, "deepseek": 4.9},
+        # USD per task per budget window: when reached, callers fall back to their normal route.
+        "task_budgets": {"closer_hot": 2.0},
+        # Effort for specific Anthropic models (others use anthropic_effort).
+        "anthropic_effort_by_model": {"claude-sonnet-5-5": "medium"},
         "monthly_budget_usd": 12.7,
         "budget_window_days": 30,
         "daily_burst": 2.0,

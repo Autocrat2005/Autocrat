@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from nexus.core.logger import get_logger
 from nexus.core.runtime import RuntimeControl
 from nexus.core.secrets import get_secret
-from nexus.integrations.deals import _send_in_thread, email_of, first_name
+from nexus.integrations.deals import _send_in_thread, email_of, first_name, sig
 
 log = get_logger("calls")
 
@@ -63,7 +63,19 @@ def e164(raw: str, default_cc: str = "") -> str:
         digits = default_cc + digits[1:]
     elif default_cc and len(digits) <= 10:
         digits = default_cc + digits
+    elif not default_cc:
+        return ""             # a local number and no idea which country: don't guess
     return f"+{digits}" if 8 <= len(digits) <= 15 else ""
+
+
+MARKET_CC = {"uae": "971", "dubai": "971", "abu dhabi": "971", "us": "1", "usa": "1", "united states": "1",
+             "canada": "1", "uk": "44", "united kingdom": "44", "india": "91", "australia": "61", "saudi": "966",
+             "qatar": "974", "singapore": "65", "ireland": "353"}
+
+
+def cc_for_market(market: str) -> str:
+    key = (market or "").strip().lower()
+    return next((cc for name, cc in MARKET_CC.items() if key == name or key.startswith(name + " ")), "")
 
 
 def phone_of(lead: Dict[str, Any]) -> str:
@@ -215,7 +227,7 @@ def follow_up_email(store, worker, lead: Dict[str, Any], actor: str = "calls", n
     hi = f"hey {first_name(lead)}," if first_name(lead) else "hey,"
     body = (f"{hi} great talking just now. as promised, here's the next step: a quick 20 min look at what we'd set "
             f"up for {lead.get('company') or 'you'}, with a working demo on your own setup. does {times} your time "
-            f"work?\n\n{getattr(worker, 'signature', 'Yash')}")
+            f"work?\n\n{sig(worker)}")
     if runtime.killed or runtime.is_dry_run or worker is None:
         return f"[not sent: {'kill switch' if runtime.killed else 'dry run' if runtime.is_dry_run else 'no email channel'}]\n{body}"
     try:

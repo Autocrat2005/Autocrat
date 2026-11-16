@@ -40,6 +40,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTOCRAT_ENV_FILE", str(tmp_path / "test.env"))  # nonexistent unless a test writes it
     monkeypatch.setenv("AUTOCRAT_AUTH_TOKEN", TEST_TOKEN)
     monkeypatch.setenv("RUN_MODE", "dry_run")
+    monkeypatch.setenv("MX_CHECK", "0")   # no DNS lookups in tests
     monkeypatch.setenv("AUTOCRAT_DB_PATH", str(tmp_path / "autocrat.db"))
     monkeypatch.setenv("AUTOCRAT_BRAIN", "0")
     monkeypatch.setenv("AUTOCRAT_PROFILE", "core")

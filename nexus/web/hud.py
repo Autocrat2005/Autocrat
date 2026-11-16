@@ -197,9 +197,11 @@ def build_snapshot(engine) -> Dict[str, Any]:
     followups = {k: v for k, v in c.execute(
         "SELECT status, COUNT(*) FROM outreach WHERE kind LIKE 'followup%' GROUP BY status")}
     try:
-        from nexus.integrations.email_channel import compute_cap
-        cap = compute_cap(store, int(get_secret("EMAIL_DAILY_CAP", "20") or 20),
-                          int(get_secret("EMAIL_CAP_MAX", "40") or 40), int(get_secret("EMAIL_CAP_STEP", "3") or 3))
+        from nexus.integrations.email_channel import active_worker, compute_cap
+        worker = active_worker()
+        cap = worker.cap_status() if worker else compute_cap(
+            store, int(get_secret("EMAIL_DAILY_CAP", "20") or 20),
+            int(get_secret("EMAIL_CAP_MAX", "60") or 60), int(get_secret("EMAIL_CAP_STEP", "3") or 3))
     except Exception as e:
         cap = {"cap": int(get_secret("EMAIL_DAILY_CAP", "20") or 20), "note": str(e)}
 

@@ -41,7 +41,7 @@ from nexus.core.events import EventBus
 from nexus.core.lead_state import ENGAGEMENT_RANK, LeadState
 from nexus.core.logger import get_logger
 from nexus.core.runtime import RuntimeControl
-from nexus.core.secrets import PROJECT_ROOT, env_list, get_secret
+from nexus.core.secrets import PROJECT_ROOT, env_bool, env_list, get_secret
 
 log = get_logger("whatsapp_closer")
 
@@ -129,11 +129,21 @@ def load_playbook(path: Optional[str] = None) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
+def load_proof(path: Optional[str] = None) -> str:
+    """True things we may cite (case studies, guarantees). Lives in the private config, never invented."""
+    raw = path or get_secret("AUTOCRAT_PROOF_FILE", "../autocrat-revenue-plugins/config/proof.md")
+    p = Path(raw)
+    if not p.is_absolute():
+        p = (PROJECT_ROOT / p).resolve()
+    return p.read_text(encoding="utf-8").strip() if p.exists() else ""
+
+
 def lead_context(lead: Optional[Dict[str, Any]], events: Optional[List[Dict[str, Any]]] = None) -> str:
     """What we already know about this person, so the closer never asks twice."""
     if not lead:
         return "(new contact, nothing known yet)"
-    triage = (lead.get("data") or {}).get("triage") or {}
+    data = lead.get("data") or {}
+    triage = data.get("triage") or {}
     parts = [f"name: {lead.get('name') or 'unknown'}"]
     for key, label in (("company", "company"), ("market", "market"), ("niche", "segment"), ("source", "found via")):
         if lead.get(key):
@@ -147,11 +157,17 @@ def lead_context(lead: Optional[Dict[str, Any]], events: Optional[List[Dict[str,
         sent = sum(1 for e in events if e.get("type") == "message_out")
         received = sum(1 for e in events if e.get("type") == "message_in")
         parts.append(f"messages so far: {received} from them, {sent} from us")
+    findings = [str(f) for f in ((data.get("site_check") or {}).get("findings") or [])][:3]
+    if findings:
+        parts.append("things we noticed on their website (send these, as a short list, when they ask to see "
+                     "them or say yes to our offer to share them): " + " | ".join(findings))
+    if data.get("demo_url"):
+        parts.append(f"their personal demo page (share when they ask for details): {data['demo_url']}")
     return "\n".join(parts)
 
 
 def build_system_prompt(voice: str, offers: Dict[str, Any], name: str = "Yash", playbook: str = "",
-                        context: str = "", channel: str = "WhatsApp") -> str:
+                        context: str = "", channel: str = "WhatsApp", proof: str = "") -> str:
     booking_link = offers.get("booking_link") or ""
     booking = (f"share this link: {booking_link}" if booking_link else
                "offer exactly TWO of the open times listed with the conversation, written in their timezone "
@@ -169,9 +185,29 @@ def build_system_prompt(voice: str, offers: Dict[str, Any], name: str = "Yash", 
                    "they get, the price, 50% to start and the rest when it's live, and that Yash is sending the invoice "
                    "with payment details in a few minutes. Never write payment or bank details yourself, never "
                    "invent an invoice number or a link.")
-    prompt = f"""You are replying on {channel} on behalf of Yash, co-founder of a two-person studio that ships
-fast workflow automations and small custom portals. Write exactly the way Yash writes (see the voice
-samples). Your job: understand what they need and move them to a call or a deposit, using CLOSER.
+    company = offers.get("company") or "Windrose Labs"
+    site = offers.get("site") or ""
+    mvp_range = offers.get("mvp_range") or ""
+    mvp_price = (f"quote this range when they ask: {mvp_range}" if mvp_range else
+                 "do NOT quote a price in writing: say it depends on scope and takes a 20 minute call to pin down")
+    terms = []
+    if offers.get("guarantee", True):
+        terms.append("- Deposit-back guarantee on the smaller builds: if they don't like the first working version, "
+                     "the deposit is refunded. Use it for trust or price worries.")
+    if offers.get("care_plan_usd"):
+        terms.append(f"- Care plan after delivery: ${offers['care_plan_usd']:g} a month for upkeep and small changes. "
+                     "Mention it only once they've agreed to a build or ask about support.")
+    if offers.get("referral_usd"):
+        terms.append(f"- Referral thank-you: ${offers['referral_usd']:g} for an introduction that becomes a paying "
+                     "client. Mention it only if they say it's not for them but know someone, or after a sale.")
+    terms_text = "\n".join(terms)
+    site_line = f"Our site, share it only when they ask who we are or want to see work: {site}" if site else ""
+    known = ("What we already know about this person (do not re-ask things answered here):\n" + context) if context \
+        else "What we already know about this person comes with the conversation: do not re-ask things answered there."
+    prompt = f"""You are replying on {channel} on behalf of Yash, co-founder of {company}, a two-person product
+studio (Yash + Parth) that ships MVPs, AI agents, workflow automations and small custom portals. Write exactly
+the way Yash writes (see the voice samples). Your job: understand what they need and move them to a call
+or a deposit, using CLOSER.
 
 Sales framework: CLOSER. Work out which step the conversation is at and do only that step's next move.
 - C, Clarify why they're here: ask what made them reach out / what they want fixed.
@@ -180,7 +216,8 @@ Sales framework: CLOSER. Work out which step the conversation is at and do only 
 - S, Sell the outcome, not the build: what their day looks like once it's done (time saved, leads
   answered in seconds). Keep it concrete and believable, no hype.
 - E, Explain away concerns: price ("half to start, half once it's live", "free demo first"),
-  time ("about a week"), trust ("we're new, so we show a working demo before you pay"),
+  time ("about a week"), trust (name the ONE most relevant piece of real work from the proof list, plus
+  "we show you a working demo before you pay"),
   "need to think / ask my partner" (offer a short call with both of them, ask what would make it a yes).
 - R, Reinforce the decision: once they say yes, congratulate briefly, confirm next steps and the call time,
   and keep momentum. Don't re-sell after they've agreed.
@@ -194,9 +231,19 @@ Offers (quote these freely when they ask or when you reach E):
   in full up front; the price is credited if they upgrade within 30 days):
   WhatsApp auto-reply live in 48 hours, $399 (real estate / any WhatsApp-heavy business);
   app health check + top 3 fixes done in 72 hours, $349 (AI-built Lovable/Bolt/Cursor apps)
-- Booking a call: {booking}
+- MVP in 30 days (a new product, an AI agent, a knowledge/RAG tool, a marketplace, anything bigger than a
+  small automation): "live in 30 days or you don't pay", for the scope agreed in writing before kickoff.
+  Price: {mvp_price}. Name the guarantee and the one most relevant case study, then offer two call times.
+- Booking a call: {booking}. When you confirm a call, ask in the same message for the best number to reach
+  them on in case the link fails.
 {payment}
 - Lowest-risk next step when they hesitate: a free working demo on their own stuff before they pay anything.
+{terms_text}
+
+Real proof you may cite (true; at most ONE per message, only when it helps, in your own short words, never
+embellished, never with numbers that aren't written here):
+{proof or '(none on file: do not mention past work at all)'}
+{site_line}
 
 Style rules:
 - WhatsApp length: 1 to 3 short sentences, sometimes 2 short messages separated by a blank line.
@@ -207,7 +254,8 @@ Style rules:
 Honesty rules (never break these):
 - Don't bring up that you're an assistant. But if they sincerely ask whether they're talking to a bot,
   AI or a real person, say it's an assistant Yash set up and that Yash reads every chat and can jump in.
-- Never invent past clients, results or guarantees. Never promise dates or prices beyond the offers above.
+- Never invent clients, results, numbers, reviews or guarantees. The only past work you may mention is the
+  proof list above. Never promise dates or prices beyond the offers above.
 - If they say stop or not interested, reply once briefly and politely, and stop.
 
 Return ONLY a JSON object:
@@ -216,8 +264,12 @@ Return ONLY a JSON object:
   "hot": true|false,
   "summary": "<one line for Yash about where this lead stands>",
   "meeting": "<ISO time from the open times, ONLY once they confirmed it, else empty string>",
-  "deal_usd": <the price in USD you quoted or they agreed to in this conversation, as a number, else 0>}}
+  "deal_usd": <the price in USD you quoted or they agreed to in this conversation, as a number, else 0>,
+  "follow_up_days": <if they asked to be contacted later ("try me in january", "after eid", "next month"),
+                     the number of days from today until then, else 0>,
+  "phone": "<their phone or WhatsApp number if they wrote one in this conversation, else empty string>"}}
 Use intent "ready_to_pay" only when they clearly said yes to going ahead (or asked how to pay).
+If they say "not now" with a time, agree in one line, set follow_up_days, and don't push.
 
 Everyone here is a prospect we contacted first: ALWAYS reply (sales is the goal) unless they said stop
 or not interested. If it's a canned support or ticket answer (a help desk, "check our docs/terms"), thank
@@ -231,10 +283,59 @@ Sales playbook (follow it like a professional closer would):
 Voice samples from Yash (match tone, casing, slang, emoji use):
 {voice or '(none provided: be casual, warm and direct)'}
 
-What we already know about this person (don't re-ask things answered here):
-{context or '(nothing yet)'}
+{known}
 """
     return prompt.replace("Yash", name or "Yash")
+
+
+# Things a reply must never contain: proof we can't back up, payment details, made-up paperwork.
+LINT_RULES = [
+    (re.compile(r"\bour (other |past |previous |existing |happy )?(clients|customers)\b", re.I),
+     "talks about 'our clients' in general (name one real piece of work from the proof list, or none)"),
+    (re.compile(r"\b(we've|we have|i've|i have) (helped|worked with|built for|served) (\d+|dozens|hundreds|many|several|lots)", re.I),
+     "claims a number of past clients"),
+    (re.compile(r"\b\d+\+?\s+(clients|customers|businesses|agencies|brokers|brokerages|companies|founders|startups|teams)\b", re.I),
+     "claims a number of clients"),
+    (re.compile(r"\b\d+\+?\s+years?\b[^.?!\n]{0,30}\b(experience|in business|building|shipping)", re.I),
+     "claims years of experience"),
+    (re.compile(r"\b(testimonials?|award[- ]winning|5[- ]star|five[- ]star|top[- ]rated|trusted by|as seen (in|on))\b", re.I),
+     "claims reviews or awards"),
+    (re.compile(r"\b(increase|boost|grow|improve|reduce|cut|save|lift)\w*\b[^.?!\n]{0,40}\d+\s?%|"
+                r"\d+\s?%\s+(more|fewer|faster|higher|lower|increase|reduction|growth|boost|uplift)", re.I),
+     "promises a result percentage"),
+    (re.compile(r"\b(iban|swift code|routing number|account number|sort code|ifsc|wise\.com|paypal\.me)\b", re.I),
+     "writes payment details (Yash sends those)"),
+    (re.compile(r"\b[A-Z]{2,4}-20\d{2}-\d{3,}\b"), "invents an invoice number"),
+]
+LINK_RE = re.compile(r"(?:https?://|www\.)[^\s)>\]\"']+", re.I)
+
+
+def _host(value: str) -> str:
+    from urllib.parse import urlparse
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if "@" in value and "://" not in value:
+        value = value.split("@")[-1]
+    host = (urlparse(value if "://" in value else f"https://{value}").hostname or "").lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def closer_lint(reply: str, allowed_hosts=()) -> List[str]:
+    """Problems that must stop a reply from going out. Empty list = fine. No tokens, no network."""
+    from nexus.integrations.email_channel import PLACEHOLDER_RE
+    text = reply or ""
+    problems = [why for pattern, why in LINT_RULES if pattern.search(text)]
+    allowed = {h for h in (_host(a) for a in allowed_hosts) if h}
+    for link in LINK_RE.findall(text):
+        host = _host(link.rstrip(".,;!?"))
+        if host and not any(host == a or host.endswith("." + a) for a in allowed):
+            problems.append(f"includes a link that isn't ours or theirs ({host})")
+    if PLACEHOLDER_RE.search(text):
+        problems.append("has a template placeholder")
+    if text.count("?") > 2:
+        problems.append("asks more than one question")
+    return problems
 
 
 def format_transcript(messages: List[Dict[str, Any]], contact: str) -> str:
@@ -278,7 +379,14 @@ class WhatsAppCloser:
             "booking_link": get_secret("BOOKING_LINK"),
             "deposit_link_usd": get_secret("DEPOSIT_LINK_USD"),
             "deposit_link_inr": get_secret("DEPOSIT_LINK_INR"),
+            "company": get_secret("EMAIL_COMPANY", "Windrose Labs") or "Windrose Labs",
+            "site": (get_secret("EMAIL_SITE", "") or "").strip(),
+            "mvp_range": (get_secret("MVP_PRICE_RANGE", "") or "").strip(),
+            "guarantee": env_bool("DEPOSIT_GUARANTEE", True),
+            "care_plan_usd": float(get_secret("CARE_PLAN_USD", "149") or 0),
+            "referral_usd": float(get_secret("REFERRAL_REWARD_USD", "150") or 0),
         }
+        self.proof = load_proof()
         self._replies: Dict[str, List[float]] = {}
 
     # ── wiring ───────────────────────────────────────────────────
@@ -329,12 +437,31 @@ class WhatsAppCloser:
                                          channel="whatsapp", contact=phone or title, actor="closer")
         return lead
 
+    def _ask(self, prompt: str, system: str, task: str, lead_id: Optional[str], max_tokens: int) -> Dict[str, Any]:
+        result = self.router.complete(prompt, task=task, system=system, json_mode=True,
+                                      max_tokens=max_tokens, lead_id=lead_id)
+        return result.data if isinstance(result.data, dict) else {}
+
+    def _hot_ok(self) -> bool:
+        """The stronger model is used only while its own small monthly cap (llm.task_budgets) has room."""
+        refusal = getattr(self.router, "task_refusal", None)
+        return bool(refusal) and env_bool("CLOSER_HOT_MODEL", True) and not refusal("closer_hot")
+
+    def _allowed_hosts(self, lead: Optional[Dict[str, Any]], link: str) -> List[str]:
+        data = (lead or {}).get("data") or {}
+        return [link, "meet.jit.si", "wa.me", "causalith.com", self.offers.get("site") or "",
+                self.offers.get("booking_link") or "", self.offers.get("deposit_link_usd") or "",
+                self.offers.get("deposit_link_inr") or "", get_secret("PAYMENT_LINK", "") or "",
+                get_secret("MEETING_LINK", "") or "", (lead or {}).get("url") or "",
+                (lead or {}).get("contact") or "", str(data.get("website") or ""), str(data.get("demo_url") or ""),
+                str(data.get("reply_to") or "")]
+
     def decide(self, transcript: str, lead_id: Optional[str] = None, channel: str = "WhatsApp") -> Dict[str, Any]:
         lead = self.store.get_lead(lead_id) if lead_id else None
         events = self.store.lead_events(lead_id) if lead_id else None
+        # Everything that changes per lead goes in the message, so the big system prompt stays cacheable.
         system = build_system_prompt(self.voice, self.offers, self.persona, playbook=self.playbook,
-                                     context=lead_context(lead, events), channel=channel)
-        # Live booking info goes in the message, not the system prompt, so the big system prompt stays cacheable.
+                                     channel=channel, proof=getattr(self, "proof", ""))
         from nexus.integrations import booking
         their_offset = booking_offset(lead)
         busy = [m["start"] for m in booking.booked_meetings(self.store)]
@@ -342,19 +469,58 @@ class WhatsAppCloser:
         link = booking.meeting_link(lead_id or "")
         call_info = (f"\n\nOpen times for a call (their time = ISO): {booking.slots_text(slots, their_offset)}\n"
                      f"Meeting link: {link}") if slots else ""
-        prompt = (f"Conversation so far (latest last):\n{transcript}{call_info}\n\n"
+        prompt = (f"What we know about them:\n{lead_context(lead, events)}\n\n"
+                  f"Conversation so far (latest last):\n{transcript}{call_info}\n\n"
                   f"Write {self.persona}'s next {channel} reply.")
-        result = self.router.complete(prompt, task="closer", system=system, json_mode=True,
-                                      max_tokens=600, lead_id=lead_id)
-        data = result.data if isinstance(result.data, dict) else {}
+        data = self._ask(prompt, system, "closer", lead_id, 700)
         intent = data.get("intent") if data.get("intent") in INTENTS else "other"
+        model = "standard"
+        if (bool(data.get("hot")) or intent in HOT_INTENTS or intent == "objection") and data.get("reply") \
+                and self._hot_ok():
+            # A money moment: let the stronger model write this one (the first answer stays as the fallback).
+            try:
+                better = self._ask(prompt, system, "closer_hot", lead_id, 2000)
+                if str(better.get("reply") or "").strip():
+                    data = {**data, **{k: v for k, v in better.items() if v not in (None, "")}}
+                    intent = data.get("intent") if data.get("intent") in INTENTS else intent
+                    model = "strong"
+            except Exception as e:
+                log.info(f"hot-reply model unavailable, keeping the standard answer: {e}")
+
+        reply = humanize(str(data.get("reply") or ""))
+        held: List[str] = []
+        hosts = self._allowed_hosts(lead, link)
+        problems = closer_lint(reply, hosts) if reply else []
+        if problems:
+            draft = reply
+            try:
+                fix = self._ask(f"{prompt}\n\nYour draft was:\n{reply}\n\nIt breaks these rules: "
+                                f"{'; '.join(problems)}. Rewrite it so it breaks none of them.",
+                                system, "closer", lead_id, 700)
+                reply = humanize(str(fix.get("reply") or ""))
+            except Exception as e:
+                log.info(f"closer rewrite failed: {e}")
+                reply = ""
+            if not reply or closer_lint(reply, hosts):
+                held, reply = problems, ""          # never send it: the founder gets the draft instead
+                log.warning(f"Closer reply for {lead_id} held: {'; '.join(problems)}")
+            else:
+                draft = ""
+        else:
+            draft = ""
         try:
             deal = float(str(data.get("deal_usd") or 0).replace(",", "").replace("$", ""))
         except ValueError:
             deal = 0.0
+        try:
+            later = max(0, min(365, int(float(str(data.get("follow_up_days") or 0)))))
+        except ValueError:
+            later = 0
+        from nexus.integrations.calls import cc_for_market, e164
+        phone = e164(str(data.get("phone") or ""), cc_for_market((lead or {}).get("market") or ""))
         return {
             "deal_usd": deal if 50 <= deal <= 1_000_000 else 0.0,
-            "reply": humanize(str(data.get("reply") or "")),
+            "reply": reply,
             "intent": intent,
             "hot": bool(data.get("hot")) or intent in HOT_INTENTS,
             "summary": str(data.get("summary") or "")[:300],
@@ -362,6 +528,11 @@ class WhatsAppCloser:
             "meeting": _iso(booking.parse_meeting(str(data.get("meeting") or ""), slots)),
             "meeting_link": link,
             "their_offset": their_offset,
+            "follow_up_days": later,
+            "phone": phone,
+            "model": model,
+            "held": held,
+            "draft": draft,
         }
 
     def apply_outcome(self, lead: Dict[str, Any], incoming: str, decision: Dict[str, Any], alert: bool = True) -> None:
@@ -376,6 +547,15 @@ class WhatsAppCloser:
                                                              "link": decision.get("meeting_link", ""),
                                                              "their_offset": decision.get("their_offset", 0),
                                                              "channel": decision.get("channel", "")}, actor="closer")
+        if decision.get("follow_up_days"):
+            # "not now, try me in January": remember the date; the email worker checks back then.
+            self.store.log_event(lead_id, "snooze", {"until": time.time() + decision["follow_up_days"] * 86400,
+                                                     "days": decision["follow_up_days"]}, actor="closer")
+        if decision.get("phone"):
+            fresh = self.store.get_lead(lead_id) or lead
+            known = fresh.get("data") or {}
+            if not known.get("call_phone") and not known.get("phone"):
+                self.store.update_lead_fields(lead_id, data={**known, "call_phone": decision["phone"]})
         state = LeadState(lead["state"])
         if state in ENGAGEMENT_RANK and ENGAGEMENT_RANK[state] < ENGAGEMENT_RANK[LeadState.REPLIED]:
             self.store.transition(lead_id, "REPLIED", actor="closer")

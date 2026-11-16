@@ -42,7 +42,10 @@ def _lead_label(lead: Optional[Dict[str, Any]]) -> str:
 
 def is_hiring_post(lead: Optional[Dict[str, Any]]) -> bool:
     """r/forhire [Hiring] posts and HN 'SEEKING FREELANCER' comments: buyers with a budget, right now."""
-    text = str(((lead or {}).get("data") or {}).get("text") or "").lower()
+    data = (lead or {}).get("data") or {}
+    if data.get("hiring"):
+        return True
+    text = str(data.get("text") or "").lower()
     return (text.startswith("r/forhire:") and "[hiring]" in text) or text.startswith("seeking freelancer")
 
 

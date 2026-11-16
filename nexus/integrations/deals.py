@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from nexus.core.logger import get_logger
 from nexus.core.runtime import RuntimeControl
-from nexus.core.secrets import get_secret
+from nexus.core.secrets import env_bool, get_secret
 
 log = get_logger("deals")
 
@@ -145,9 +145,18 @@ def payment_email(lead: Dict[str, Any], amount: float, currency: str, invoice_no
                   "the rest once it's live and you're happy with it."]
     else:
         lines.append(f"amount: {money(amount, currency)}")
-    lines += ["", "how to pay:", *payment_lines(), "",
-              "as soon as it lands i'll send the kickoff plan the same day.", "", signature]
+    lines += ["", "how to pay:", *payment_lines(), ""]
+    if env_bool("DEPOSIT_GUARANTEE", True):
+        lines += ["our promise: if you don't like the first working version, you get this back in full.", ""]
+    lines += ["as soon as it lands i'll send the kickoff plan the same day.", "", signature]
     return "\n".join(lines)
+
+
+def sig(worker) -> str:
+    """Sign-off for people already talking to us (name, company, site)."""
+    if hasattr(worker, "sign"):
+        return worker.sign(True)
+    return getattr(worker, "signature", "Yash")
 
 
 def _send_in_thread(worker, lead: Dict[str, Any], to: str, body: str, fallback_subject: str) -> Tuple[str, str]:
@@ -184,7 +193,7 @@ def request_payment(store, worker, lead_id: str, amount: Optional[float] = None,
     currency = (currency or "USD").upper()
     invoice = next_invoice_no(store, now)
     body = payment_email(lead, float(amount), currency, invoice, total=total, scope=scope,
-                         signature=getattr(worker, "signature", "Yash"))
+                         signature=sig(worker))
     who = lead.get("company") or lead.get("name") or to
     if runtime.is_dry_run:
         return {"ok": True, "dry_run": True, "note": f"[dry run] would email {who}:\n{body}", "body": body}
@@ -240,7 +249,7 @@ def chase_payments(worker, now: Optional[datetime] = None) -> int:
                 continue
             hi = f"hey {first_name(lead)}," if first_name(lead) else "hey,"
             body = (f"{hi} just checking the invoice came through ok? if wise is a hassle i can send bank "
-                    f"details instead, just say the word.\n\n{worker.signature}")
+                    f"details instead, just say the word.\n\n{sig(worker)}")
             try:
                 subject, msg_id = _send_in_thread(worker, lead, email_of(lead), body, f"invoice {req.get('invoice', '')}")
             except Exception as e:
@@ -338,7 +347,7 @@ def apply_meeting_outcome(store, worker, lead_id: str, outcome: str, actor: str 
     if outcome == "think":
         body = (f"{hi} thanks for the chat. no pressure at all. if it helps you decide, i can put together a quick "
                 f"working demo on your own setup this week so you can see it before committing. want me to?"
-                f"\n\n{worker.signature}")
+                f"\n\n{sig(worker)}")
         kind = "after_call"
     else:   # noshow
         from nexus.integrations import booking
@@ -348,7 +357,7 @@ def apply_meeting_outcome(store, worker, lead_id: str, outcome: str, actor: str 
         slots = booking.open_slots(their, now=now, busy=busy, count=2)
         times = " or ".join(booking.describe(s, their) for s in slots) or "sometime this week"
         body = (f"{hi} looks like we missed each other, no worries at all. does {times} your time work instead? "
-                f"same link either way.\n\n{worker.signature}")
+                f"same link either way.\n\n{sig(worker)}")
         kind = "rebook"
     if not live:
         return {"note": f"[{'kill switch' if runtime.killed else 'dry run'}] would email {who}:\n{body}", "buttons": []}
@@ -359,6 +368,60 @@ def apply_meeting_outcome(store, worker, lead_id: str, outcome: str, actor: str 
     store.log_event(lead_id, "message_out", {"text": body, "subject": subject, "message_id": msg_id,
                                              "channel": "email", "kind": kind}, actor=actor)
     return {"note": f"{'🤔' if outcome == 'think' else '👻'} Sent to {who}:\n{body}", "buttons": []}
+
+
+def post_sale_followups(worker, now: Optional[datetime] = None) -> int:
+    """After the final payment: day 7, ask how it's running, for two lines of testimonial, and offer the care
+    plan; day 21, ask for an introduction (with the referral thank-you). Templates, once each, no AI cost.
+    Settings: CARE_PLAN_USD (149), REFERRAL_REWARD_USD (150); 0 switches that part off."""
+    runtime = RuntimeControl()
+    if runtime.killed or runtime.is_dry_run:
+        return 0
+    from nexus.integrations.email_channel import market_offset
+    store = worker.store
+    now = now or datetime.now(timezone.utc)
+    care = float(get_secret("CARE_PLAN_USD", "149") or 0)
+    reward = float(get_secret("REFERRAL_REWARD_USD", "150") or 0)
+    done = 0
+    rows = store._conn().execute("SELECT lead_id, MIN(ts) FROM payments WHERE kind='final' GROUP BY lead_id").fetchall()
+    for lead_id, paid_ts in rows:
+        lead = store.get_lead(lead_id) or {}
+        if lead.get("state") != "WON" or not email_of(lead):
+            continue
+        steps = {(_payload(e).get("step")) for e in store.lead_events(lead_id) if e["type"] == "post_sale"}
+        days = (now.timestamp() - float(paid_ts)) / 86400
+        hi = f"hey {first_name(lead)}," if first_name(lead) else "hey,"
+        if days >= 7 and "care" not in steps:
+            step = "care"
+            body = (f"{hi} it's been a week since we went live. how's it running?\n\n"
+                    "if you're happy with it, would you write two lines i can share as a testimonial? it helps a lot.")
+            if care:
+                body += (f"\n\nand if you'd like us to keep an eye on it and handle small changes, we do a care plan "
+                         f"at ${care:g} a month, cancel anytime. want me to set that up?")
+        elif days >= 21 and "referral" not in steps:
+            step = "referral"
+            body = (f"{hi} quick one: if you know someone else who'd want something like what we built for you, "
+                    "an intro would mean a lot.")
+            if reward:
+                body += f" there's a ${reward:g} thank-you for any intro that becomes a client."
+        else:
+            continue
+        their_now = now + timedelta(minutes=market_offset(lead.get("market") or "", worker.offset))
+        if not worker._in_hours(their_now):
+            continue
+        body = f"{body}\n\n{sig(worker)}"
+        try:
+            subject, msg_id = _send_in_thread(worker, lead, email_of(lead), body, "how's it running?")
+        except Exception as e:
+            log.info(f"post-sale {step} email for {lead_id} failed: {e}")
+            continue
+        store.log_event(lead_id, "message_out", {"text": body, "subject": subject, "message_id": msg_id,
+                                                 "channel": "email", "kind": f"post_sale_{step}"}, actor="deals")
+        store.log_event(lead_id, "post_sale", {"step": step}, actor="deals")
+        who = lead.get("company") or lead.get("name") or email_of(lead)
+        worker.alerts.notify(f"🤝 Sent {who} the {'check-in + care plan' if step == 'care' else 'referral ask'}.", "orange")
+        done += 1
+    return done
 
 
 def money_board(store, now: Optional[datetime] = None) -> str:

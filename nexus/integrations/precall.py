@@ -21,7 +21,7 @@ from nexus.core.logger import get_logger
 from nexus.core.runtime import RuntimeControl
 from nexus.core.secrets import get_secret
 from nexus.integrations import site_audit
-from nexus.integrations.deals import _send_in_thread, email_of, first_name
+from nexus.integrations.deals import _send_in_thread, email_of, first_name, sig
 
 log = get_logger("precall")
 
@@ -31,6 +31,10 @@ AGGREGATORS = ("ycombinator.com", "reddit.com", "google.com", "goo.gl", "madewit
 OFFERS = ("Offers (USD): rapid workflow automation from 1,250 (about a week); custom portal from 2,500; "
           "real-estate WhatsApp AI + CRM from 2,500; vibe-coder rescue (Lovable/Bolt/Cursor app to production) "
           "from 1,250. Always 50% deposit to start, rest on delivery. Free working demo before they pay. "
+          "Bigger builds (a product, AI agent, knowledge tool, marketplace): the 30-day MVP, 'live in 30 days or "
+          "you don't pay', price agreed on the call. Real work to cite, one at most: an AI agent marketplace built "
+          "end to end for a client (NDA), our own research copilot Causalith, an AI companion built for a client. "
+          "Deposit-back guarantee on small builds. After delivery: care plan 149 a month. "
           "Quick-start first yes (paid in full, credited if they upgrade within 30 days): WhatsApp auto-reply "
           "live in 48h for 399; app health check + top 3 fixes in 72h for 349.")
 
@@ -149,7 +153,7 @@ def prepare_packs(worker, now: Optional[datetime] = None, limit: int = 2,
             log.info(f"pre-call brief for {lead_id} failed: {e}")
             brief = {}
         teaser = teaser_email(lead, audit, when=meeting_theirs and f"on {meeting_theirs}",
-                              signature=getattr(worker, "signature", "Yash")) if email_of(lead) else ""
+                              signature=sig(worker)) if email_of(lead) else ""
         store.log_event(lead_id, "precall_pack", {"status": "done", "brief": brief, "site": audit.get("url"),
                                                   "findings": [f["line"] for f in audit.get("findings") or []][:8],
                                                   "teaser": teaser}, actor="precall")

@@ -628,13 +628,17 @@ class Store:
                  float(cost_usd), lead_id, 1 if ok else 0),
             )
 
-    def spend_since(self, since_ts: float, provider: Optional[str] = None) -> Dict[str, Any]:
+    def spend_since(self, since_ts: float, provider: Optional[str] = None,
+                    task: Optional[str] = None) -> Dict[str, Any]:
         sql = ("SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(input_tokens),0),"
                " COALESCE(SUM(output_tokens),0), COUNT(*) FROM budget_ledger WHERE ts>=?")
         params: Tuple[Any, ...] = (since_ts,)
         if provider:
             sql += " AND provider=?"
             params += (provider,)
+        if task:
+            sql += " AND task=?"
+            params += (task,)
         row = self._conn().execute(sql, params).fetchone()
         return {"cost_usd": round(row[0], 6), "input_tokens": row[1], "output_tokens": row[2], "calls": row[3]}
 

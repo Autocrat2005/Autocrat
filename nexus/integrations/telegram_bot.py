@@ -367,7 +367,10 @@ class TelegramBot:
         for status in ("approved", "staged"):
             for o in store.list_outreach(status, channel="whatsapp", limit=200):
                 lead = store.get_lead(o["lead_id"]) or {}
-                number = normalize(lead.get("contact") or "")
+                # The draft's own number first (a second touch goes to a mobile while the lead's contact is an email).
+                ckey = o.get("contact_key") or ""
+                number = normalize(ckey[len("phone:"):]) if ckey.startswith("phone:") else ""
+                number = number or normalize(lead.get("contact") or "")
                 if not number:
                     continue
                 _, body = split_subject(o["draft"])
@@ -447,7 +450,12 @@ class TelegramBot:
         if lead and lead["state"] == "STAGED":
             store.transition(lead["id"], "APPROVED", actor=actor)
         store.mark_outreach_sent(outreach_id, actor=actor)
-        return f"✔ Sent to {(lead or {}).get('company') or (lead or {}).get('name') or 'them'}."
+        who = (lead or {}).get("company") or (lead or {}).get("name") or "them"
+        if lead and "@" in (lead.get("contact") or ""):
+            # They also get our emails: a WhatsApp answer must stop those.
+            return (f"✔ Sent to {who}. If they answer on WhatsApp, type: advance {lead['id']} to replied "
+                    f"(stops the follow-up emails). If they say no: dnc {lead['id']}")
+        return f"✔ Sent to {who}."
 
     async def _cmd_id(self, update, context):
         """Show IDs for setup. Works for anyone; IDs aren't secrets and grant nothing."""
