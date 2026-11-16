@@ -285,6 +285,13 @@ def test_threads_stay_in_their_inbox_and_new_ones_go_where_there_is_room(store):
     a, b = Box("yash@studio.example", "Yash"), Box("parth@studio.example", "Parth")
     pool = MailboxPool(store, [a, b])
     pool.primary_cap = 2
+    # Until we've read an extra inbox, it starts nothing: replies we can't see are lost sales.
+    assert pool.extra_capacity() == 0 and pool.pick() is a
+    b.fetch_recent = lambda **kw: (_ for _ in ()).throw(RuntimeError("IMAP not enabled"))
+    assert pool.fetch_recent() == [] and b.readable is False and pool.pick() is a
+    del b.fetch_recent
+    pool.fetch_recent()
+    assert b.readable is True
     assert pool.address == "yash@studio.example" and pool.extra_capacity() == 5      # a new inbox starts at 5 a day
     first = pool.send("x@lead.example", "hi", "hey, quick one\n\nYash\nStudio")
     assert len(b.sent) == 1 and "Parth\nStudio" in b.sent[0]["body"]               # most room: the new inbox, in its own name

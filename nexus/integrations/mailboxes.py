@@ -72,7 +72,7 @@ class MailboxPool:
         return min(int(get_secret("EMAIL_CAP_MAX", "60") or 60), start + step * days)
 
     def extra_capacity(self) -> int:
-        return sum(self.cap_for(b) for b in self.boxes[1:])
+        return sum(self.cap_for(b) for b in self.boxes[1:] if getattr(b, "readable", False))
 
     def status(self) -> List[Dict[str, Any]]:
         return [{"address": b.address, "name": b.from_name, "cap": self.cap_for(b), "sent": self.sent_today(b)}
@@ -80,7 +80,9 @@ class MailboxPool:
 
     def pick(self):
         """The inbox with the most room left today, for a brand-new thread."""
-        room = [(self.cap_for(b) - self.sent_today(b), -i, b) for i, b in enumerate(self.boxes)]
+        # An extra inbox only starts threads once we've managed to read it: replies we can't see are lost sales.
+        usable = [(i, b) for i, b in enumerate(self.boxes) if b is self.primary or getattr(b, "readable", False)]
+        room = [(self.cap_for(b) - self.sent_today(b), -i, b) for i, b in usable]
         best = max(room, key=lambda r: (r[0], r[1]))
         return best[2] if best[0] > 0 else self.primary
 
@@ -137,8 +139,14 @@ class MailboxPool:
         for box in self.boxes:
             try:
                 out += self._tag(box.fetch_recent(days=days, limit=limit, wanted=wanted), box)
+                if not getattr(box, "readable", False):
+                    box.readable = True
+                    if box is not self.primary:
+                        log.info(f"📬 {box.address} is readable: it can now start new threads")
             except Exception as e:
-                log.warning(f"Reading {box.address} failed: {e}")
+                if getattr(box, "readable", None) is not False:
+                    log.warning(f"Reading {box.address} failed, so it won't start new threads yet: {e}")
+                box.readable = False
         return out
 
     def fetch_unseen(self, limit: int = 20, wanted: Optional[Callable] = None) -> List[Dict[str, Any]]:
