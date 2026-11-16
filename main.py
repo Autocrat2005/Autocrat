@@ -151,6 +151,7 @@ def main():
                 log.info(f"💬 WhatsApp closer on ({engine.runtime.run_mode}: "
                          f"{'drafts only' if engine.runtime.is_dry_run else 'SENDING'})")
             wa_alerts.start()
+            engine.wa_alerts = wa_alerts   # the deck can address the group directly
         except Exception as e:
             log.warning(f"WhatsApp alerts/closer failed to start: {e}")
 
@@ -164,6 +165,24 @@ def main():
             EmailWorker(engine.store, brain, fanout).start()
         except Exception as e:
             log.warning(f"Email channel failed to start: {e}")
+
+    # ── WhatsApp via Meta's Cloud API: answers people who message us first (free 24h window) ──
+    if env_bool("WHATSAPP_CLOUD_ENABLED", False):
+        try:
+            from nexus.integrations.email_channel import AlertFanout
+            from nexus.integrations.whatsapp_closer import WhatsAppCloser
+            from nexus.integrations.whatsapp_cloud import WhatsAppCloud
+            from nexus.web import server as web_server
+            wa_fanout = AlertFanout([telegram_bot])
+            wa_cloud = WhatsAppCloud(engine.store, WhatsAppCloser(wa_fanout, store=engine.store), wa_fanout)
+            if wa_cloud.configured:
+                web_server.set_whatsapp_cloud(wa_cloud)
+                log.info("📲 WhatsApp Cloud API closer on: webhook at /webhooks/whatsapp")
+            else:
+                log.warning("WhatsApp Cloud API: set WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN, "
+                            "WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN in .env")
+        except Exception as e:
+            log.warning(f"WhatsApp Cloud API failed to start: {e}")
 
     # ── Initialize Heartbeat ──
     heartbeat = None

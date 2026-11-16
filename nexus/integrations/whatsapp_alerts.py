@@ -54,7 +54,9 @@ SELECTORS = {
     "compose": ["footer div[contenteditable='true']", "div[contenteditable='true'][data-tab='10']",
                 "div[aria-label='Type a message']"],
     "search": ["div[contenteditable='true'][data-tab='3']", "div[aria-label='Search input textbox']",
-               "div[aria-label*='Search' i][contenteditable='true']"],
+               "div[aria-label*='Search' i][contenteditable='true']", "input[aria-label*='Search' i]",
+               "[role='textbox'][aria-label*='Search' i]", "input[placeholder*='Search' i]"],
+    "stay_logged_in": ["input[type='checkbox']"],
     "invalid_number": ["div[data-animate-modal-popup='true']"],
 }
 
@@ -117,6 +119,7 @@ class WhatsAppAlertNotifier:
         self.profile_dir = Path(profile_dir or get_secret("WHATSAPP_ALERT_PROFILE") or DEFAULT_PROFILE)
         self.headless = env_bool("WHATSAPP_ALERT_HEADLESS", True) if headless is None else headless
         self.max_per_hour = int(max_per_hour or get_secret("WHATSAPP_ALERT_MAX_PER_HOUR", "12") or 12)
+        self.level = (get_secret("WHATSAPP_ALERT_LEVEL", "essential") or "essential").strip().lower()
         self.batch_seconds = batch_seconds
         self.quiet_hours = quiet_hours if quiet_hours is not None else (
             get_secret("WHATSAPP_QUIET_HOURS") or get_secret("TELEGRAM_QUIET_HOURS", "23-8"))
@@ -175,7 +178,7 @@ class WhatsAppAlertNotifier:
     # ── event wiring ─────────────────────────────────────────────
 
     def attach(self) -> None:
-        for pattern in ("lead.*", "control.*"):
+        for pattern in ("lead.*", "control.*", "payment.*", "report.*"):
             self.events.on(pattern, self._on_event)
 
     def _on_event(self, entry: Dict) -> None:
@@ -184,12 +187,17 @@ class WhatsAppAlertNotifier:
         except Exception as e:
             log.warning(f"WhatsApp alert build failed for {entry.get('event')}: {e}")
             return
+        # "essential" (default): WhatsApp only carries what needs you now. Staged drafts and other
+        # routine lead events stay on Telegram, which keeps this number's volume low.
+        if alert and self.level == "essential" and (entry.get("event") or "").startswith("lead.") \
+                and alert.get("priority") != "red":
+            return
         if alert:
             self.notify(to_whatsapp_text(alert["text"]), priority=alert["priority"])
 
-    def notify(self, text: str, priority: str = "orange") -> None:
-        """Thread-safe: queue an alert for the sender thread."""
-        self._queue.put({"text": text, "priority": priority, "ts": time.time()})
+    def notify(self, text: str, priority: str = "orange", only: Optional[str] = None) -> None:
+        """Thread-safe: queue an alert for the sender thread. only="groups" skips the numbers."""
+        self._queue.put({"text": text, "priority": priority, "ts": time.time(), "only": only})
 
     # ── batching / rate limiting (pure, testable) ────────────────
 
@@ -267,7 +275,12 @@ class WhatsAppAlertNotifier:
             log.warning("WhatsApp alert rate limit reached — holding message")
             self._held.append(message)
             return
-        for kind, target in self.recipients():
+        targets = self.recipients()
+        if items and all(i.get("only") == "groups" for i in items):
+            targets = [t for t in targets if t[0] == "group"]
+        # groups first: a bad number can leave a popup that blocks the next send
+        targets.sort(key=lambda t: 0 if t[0] == "group" else 1)
+        for kind, target in targets:
             try:
                 self.send(kind, target, message)
             except Exception as e:
@@ -317,16 +330,24 @@ class WhatsAppAlertNotifier:
         page.goto(f"{WEB_URL}send?phone={_digits(number)}&text={quote(text)}", wait_until="domcontentloaded")
         compose = self._wait_any(page, "compose", 45_000)
         if compose is None:
-            raise RuntimeError(f"Chat for {number} did not open (number not on WhatsApp?)")
+            try:
+                page.keyboard.press("Escape")
+                page.goto(WEB_URL, wait_until="domcontentloaded")
+            except Exception:
+                pass
+            raise RuntimeError(f"Chat for {number} did not open (number not on WhatsApp, or missing country code?)")
         time.sleep(1.0)
         compose.click()
         page.keyboard.press("Enter")
         time.sleep(2.0)
 
     def _send_to_group(self, page, group: str, text: str) -> None:
-        if self._wait_any(page, "logged_in", 30_000) is None:
+        page.keyboard.press("Escape")
+        if self._wait_any(page, "logged_in", 10_000) is None or self._wait_any(page, "search", 3_000) is None:
             page.goto(WEB_URL, wait_until="domcontentloaded")
-            self._wait_any(page, "logged_in", 60_000)
+            if self._wait_any(page, "logged_in", 60_000) is None:
+                if self._wait_any(page, "qr", 2_000) is not None:
+                    raise RuntimeError("WhatsApp Web is logged out: run `python -m nexus.integrations.whatsapp_alerts login`")
         search = self._wait_any(page, "search", 15_000)
         if search is None:
             raise RuntimeError("WhatsApp Web search box not found")
@@ -375,12 +396,23 @@ def _login(headless: bool) -> int:
         ctx = launch_context(pw, notifier.profile_dir, headless)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.goto(WEB_URL, wait_until="domcontentloaded")
+        for _ in range(20):   # WhatsApp only keeps the session after the browser closes if this is ticked
+            box = page.locator("input[type='checkbox']").first
+            try:
+                if box.count():
+                    if not box.is_checked():
+                        box.check(force=True)
+                    print("☑ 'Stay logged in on this browser' is ticked")
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
         print("Scan the QR with the SENDER phone: WhatsApp → Linked devices → Link a device.")
         deadline = time.time() + 300
         while time.time() < deadline:
             if notifier._wait_any(page, "logged_in", 2_000):
                 print("✅ Logged in — session saved to", notifier.profile_dir)
-                time.sleep(5)  # let WhatsApp finish syncing before closing
+                time.sleep(25)  # let WhatsApp finish syncing chats before closing
                 ctx.close()
                 return 0
             if headless:

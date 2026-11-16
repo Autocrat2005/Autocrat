@@ -65,3 +65,14 @@ def test_events_flow_to_notifier_queue():
 def test_not_started_without_recipients():
     n = WhatsAppAlertNotifier(numbers=[], groups=[], sender=lambda *a: None)
     assert n.start() is False
+
+
+def test_group_only_resend_and_groups_go_first():
+    from nexus.integrations.whatsapp_alerts import WhatsAppAlertNotifier
+    sent = []
+    n = WhatsAppAlertNotifier(numbers=["911111111111"], groups=["Team"], sender=lambda k, t, x: sent.append((k, t)))
+    n._flush([{"text": "hi", "priority": "red", "ts": 0, "only": "groups"}])
+    assert sent == [("group", "Team")]
+    sent.clear()
+    n._flush([{"text": "all", "priority": "red", "ts": 0}])
+    assert sent == [("group", "Team"), ("number", "911111111111")]

@@ -41,7 +41,7 @@ class FakeCloser:
         self.calls.append((transcript, channel))
         return dict(self.decision)
 
-    def apply_outcome(self, lead, incoming, decision):
+    def apply_outcome(self, lead, incoming, decision, alert=True):
         self.store.log_event(lead["id"], "message_in", {"text": incoming})
         if decision["intent"] == "stop":
             self.store.transition(lead["id"], "DNC", reason="stop")
@@ -255,3 +255,17 @@ def test_placeholder_or_replied_followup_never_sends(store, monkeypatch):
     w.send_openers(IN_HOURS)
     assert len(t.sent) == before                                       # replied since: follow-up dropped
     assert all(o["status"] != "staged" for o in store.outreach_for_lead(lead["id"]))
+
+
+def test_every_reply_alerts_once_with_their_words_and_our_answer(store):
+    RuntimeControl().set_run_mode("live", actor="test")
+    staged_email_lead(store)
+    inbox = [{"uid": "5", "from": "broker@agency.ae", "subject": "Re: quick one", "message_id": "<r>", "references": "",
+              "body": "we lose leads at night honestly, what does it cost?"}]
+    t = FakeTransport(inbox)
+    w = make_worker(store, t, {"reply": "most setups start at $2,500. how many leads a week?", "intent": "pricing",
+                               "hot": True, "summary": "asked price"})
+    w.handle_replies()
+    alerts = [text for prio, text in w.alerts.items]
+    assert len(alerts) == 1 and w.alerts.items[0][0] == "red"
+    assert "HOT email reply" in alerts[0] and "what does it cost" in alerts[0] and "auto-replied" in alerts[0]

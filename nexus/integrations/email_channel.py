@@ -110,6 +110,17 @@ def compute_cap(store, base: int, cap_max: int = 40, step: int = 3,
             "sent_7d": s7, "bounces_7d": b7, "bounce_rate": round(rate, 4), "note": why}
 
 
+def reply_alert(lead: Dict[str, Any], sender: str, text: str, decision: Dict[str, Any], outcome: str) -> str:
+    """One readable alert per email reply: who, what they said, what happened."""
+    who = lead.get("company") or lead.get("name") or sender
+    if lead.get("name") and lead.get("company"):
+        who = f"{lead['name']} ({lead['company']})"
+    head = "🔴 HOT email reply" if decision.get("hot") else "📩 Email reply"
+    said = " ".join((text or "").split())[:400]
+    return (f"{head} from {who} · {decision.get('intent') or 'other'}\n"
+            f"“{said}”\n↳ {outcome[:600]}")
+
+
 QUOTE_MARKERS = [re.compile(p, re.I | re.M) for p in (
     r"^On .+wrote:\s*$", r"^-{2,}\s*Original Message", r"^From:\s.+$", r"^Sent from my ",
 )]
@@ -251,6 +262,9 @@ class EmailWorker:
         self.optout = get_secret("EMAIL_OPTOUT_LINE", "p.s. if this isn't relevant, just reply 'no' and i won't email again")
         self.signature = get_secret("EMAIL_SIGNATURE", "Yash")
         self.postal = (get_secret("EMAIL_POSTAL_ADDRESS", "") or "").strip()
+        self.wa_number = (get_secret("WHATSAPP_BUSINESS_NUMBER", "") or "").strip()
+        self.wa_markets = [m.strip().lower() for m in
+                           (get_secret("EMAIL_WHATSAPP_LINK_MARKETS", "UAE") or "UAE").split(",") if m.strip()]
         self.cap_max = int(get_secret("EMAIL_CAP_MAX", "40") or 40)
         self.cap_step = int(get_secret("EMAIL_CAP_STEP", "3") or 3)
         self.followups_on = (get_secret("EMAIL_FOLLOWUPS", "1") or "1").lower() in ("1", "true", "yes")
@@ -296,6 +310,17 @@ class EmailWorker:
         return {"followups_staged": staged, "sent": self.send_openers(now), "replied": self.handle_replies()}
 
     # ── warm-up cap ──────────────────────────────────────────────
+
+    def whatsapp_line(self, lead: Dict[str, Any]) -> str:
+        """'or just whatsapp me' + a wa.me link whose prefilled text carries the lead's ref.
+        They message us first, so the Cloud API closer can answer for free."""
+        market = (lead.get("market") or "").strip().lower()
+        if not self.wa_number or not market or not any(market == m or market.startswith(m + " ") for m in self.wa_markets):
+            return ""
+        from nexus.integrations.whatsapp_cloud import click_to_chat, ref_for
+        first = (lead.get("company") or lead.get("name") or "").strip()
+        text = f"Hi Yash, {('re ' + first + ' ') if first else ''}(ref {ref_for(lead['id'])})"
+        return f"or if whatsapp is easier: {click_to_chat(self.wa_number, text)}"
 
     def cap_status(self, now_ts: Optional[float] = None) -> Dict[str, Any]:
         return compute_cap(self.store, self.daily_cap, self.cap_max, self.cap_step, now_ts)
@@ -429,6 +454,8 @@ class EmailWorker:
                 body, in_reply_to, references = out["draft"].strip(), thread["last_id"], thread["message_id"]
             else:
                 subject, body = split_subject(out["draft"])
+            wa_line = self.whatsapp_line(lead)
+            body = f"{body}\n\n{wa_line}" if wa_line else body
             body = f"{body}\n\n{self.signature}\n\n{self.optout}"
             if self.postal:  # CAN-SPAM (US) wants a physical postal address on commercial email
                 body = f"{body}\n{self.postal}"
@@ -516,12 +543,13 @@ class EmailWorker:
                 self.transport.mark_seen(mail["uid"])
                 continue
             decision = self.closer.decide(self.transcript_for(lead["id"], text), lead_id=lead["id"], channel="email")
-            self.closer.apply_outcome(lead, text, decision)   # logs message_in, REPLIED/DNC, hot alerts
+            # logs message_in, REPLIED/DNC; the alert below replaces the closer's own (one message per reply)
+            self.closer.apply_outcome(lead, text, decision, alert=False)
             reply = decision["reply"]
             subject = mail["subject"] if mail["subject"].lower().startswith("re:") else f"Re: {mail['subject']}"
+            outcome = ""
             if reply and RuntimeControl().is_dry_run:
-                self.alerts.notify(f"🟠 [dry run] Email reply to {lead.get('name') or mail['from']} "
-                                   f"({decision['intent']}):\n{reply}", "orange")
+                outcome = f"[dry run] would answer:\n{reply}"
             elif reply and not RuntimeControl().killed:
                 body = f"{reply}\n\n{self.signature}"
                 self.sleep(min(120.0, 20 + len(text) / 10))   # don't reply in 2 seconds
@@ -530,6 +558,13 @@ class EmailWorker:
                 self.store.log_event(lead["id"], "message_out", {"text": reply, "subject": subject,
                                                                  "message_id": msg_id, "channel": "email",
                                                                  "intent": decision["intent"]}, actor="closer")
+                outcome = f"auto-replied:\n{reply}"
+            elif decision["intent"] in ("stop", "not_interested"):
+                outcome = "marked do-not-contact"
+            else:
+                outcome = "no auto-reply: your move"
+            self.alerts.notify(reply_alert(lead, mail["from"], text, decision, outcome),
+                               "red" if decision.get("hot") else "orange")
             self.transport.mark_seen(mail["uid"])
             handled += 1
         return handled

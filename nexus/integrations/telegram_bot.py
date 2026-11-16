@@ -248,6 +248,7 @@ class TelegramBot:
             app.add_handler(CommandHandler("mode", self._cmd_mode))
             app.add_handler(CommandHandler("id", self._cmd_id))
             app.add_handler(CommandHandler("lead", self._cmd_lead))
+            app.add_handler(CommandHandler("wa", self._cmd_wa))
             # Forward any message (Discord copy, Reddit link, group chat) to the bot = capture it as a lead
             app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND, self._handle_forward))
             app.add_handler(CallbackQueryHandler(self._handle_callback, pattern=r"^(approve|reject|oa|os|dnc):"))
@@ -317,6 +318,37 @@ class TelegramBot:
         result = await asyncio.get_running_loop().run_in_executor(None, self._capture_lead, text, self._actor(update))
         await self._reply_result(update.message, result)
 
+    async def _cmd_wa(self, update, context):
+        """/wa <message with {name}> + a list of numbers → one tap-to-send wa.me button each. No LLM."""
+        if not await self._is_authorized(update):
+            return
+        text = (update.message.text or "").split(None, 1)[1] if len((update.message.text or "").split(None, 1)) > 1 else ""
+        replied = update.message.reply_to_message
+        if replied and (replied.text or replied.caption):
+            text = (text + "\n" + (replied.text or replied.caption)).strip()
+        from nexus.core.lead_state import contact_key
+        from nexus.core.secrets import get_secret
+        from nexus.integrations.wa_links import build
+        store = getattr(self.engine, "store", None)
+        blocked = (lambda n: store.is_suppressed(contact_key("whatsapp", "+" + n))) if store else None
+        out = build(text, get_secret("WA_LINKS_DEFAULT_CC", "971") or "971", blocked)
+        if not out["links"]:
+            await update.message.reply_text(
+                "Send it like this (numbers on their own lines, {name} optional):\n\n"
+                "/wa Hi {name}, quick one about your listings...\nOmar Khan, 050 123 4567\n+971 55 765 4321")
+            return
+        if store:
+            store.audit(self._actor(update), "wa_links", {"count": len(out["links"])})
+        preview = out["message"][:300] or "(no message, just opens the chat)"
+        head = f"📲 {len(out['links'])} chat(s) ready. Tap, check, send.\nMessage: {preview}"
+        if out["skipped"]:
+            head += "\nSkipped: " + ", ".join(f"{c['name'] or c['number']} ({why})" for c, why in out["skipped"][:10])
+        for start in range(0, len(out["links"]), 40):
+            rows = [[{"text": f"{start + i + 1}. {(l['name'] or '+' + l['number'])[:28]}", "url": l["url"]}]
+                    for i, l in enumerate(out["links"][start:start + 40])]
+            await update.message.reply_text(head if start == 0 else f"📲 continued ({start + 1}+)",
+                                            reply_markup=self._keyboard(rows))
+
     async def _cmd_id(self, update, context):
         """Show IDs for setup. Works for anyone; IDs aren't secrets and grant nothing."""
         user = update.effective_user
@@ -340,6 +372,8 @@ class TelegramBot:
             "/mode dry_run | /mode live — switch run mode (live asks for approval)\n"
             "/plugins — loaded plugins\n"
             "/lead &lt;text or link&gt; — capture a lead you spotted (or just forward the message here)\n"
+            "/wa &lt;message, {name} optional&gt; + numbers on new lines — tap-to-send WhatsApp links (you press send)\n"
+            "<code>paid &lt;lead id&gt; 625 USD</code> — log a deposit (add <code>final</code> when fully paid)\n"
             "<code>radar</code> / <code>radar run hn</code> — radar status / run a source now\n\n"
             "Or type any command, e.g. <code>leads staged</code>, <code>pipeline</code>.",
             parse_mode="HTML")

@@ -261,6 +261,20 @@ def do_action(engine, action: str, ident: str = "", text: str = "", actor: str =
         kind = "final" if any(p.lower() in ("final", "won", "full") for p in parts[1:]) else "deposit"
         pay = store.record_payment(ident, amount, currency=currency, kind=kind, actor=actor)
         return {"success": True, "result": f"{pay['currency']} {pay['amount']:,.2f} {pay['kind']} recorded."}
+    if action == "announce":
+        # A note to the founders (Telegram + WhatsApp group) through the normal alert path.
+        from nexus.core.events import EventBus
+        if not (text or "").strip():
+            return {"success": False, "error": "nothing to announce"}
+        store.audit(actor, "announce", {"chars": len(text), "to": ident or "all"})
+        if ident == "group":   # re-send to the WhatsApp group(s) only
+            wa = getattr(engine, "wa_alerts", None)
+            if wa is None:
+                return {"success": False, "error": "WhatsApp alerts are not running"}
+            wa.notify(text.strip()[:3500], "red", only="groups")
+            return {"success": True, "result": "Queued for the WhatsApp group."}
+        EventBus().emit("report.announcement", {"text": text.strip()[:3500]})
+        return {"success": True, "result": "Sent to Telegram and WhatsApp."}
     if action == "opportunities":
         return engine.execute("opportunities", actor=actor)
     return {"success": False, "error": f"unknown action '{action}'"}

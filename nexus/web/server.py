@@ -15,9 +15,9 @@ import os
 import tempfile
 import yaml
 from typing import Any, Dict, List, Optional, Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException, Query, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException, Query, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from nexus.core.engine import NexusEngine
@@ -187,6 +187,41 @@ async def hud_page():
     if os.path.exists(path):
         return FileResponse(path, headers={"Cache-Control": "no-store"})
     return HTMLResponse("<h1>HUD not found</h1>", status_code=404)
+
+
+# ─── WhatsApp Cloud API webhook (public: Meta must reach it; every POST is signature-checked) ──
+
+whatsapp_cloud = None
+
+
+def set_whatsapp_cloud(handler):
+    global whatsapp_cloud
+    whatsapp_cloud = handler
+
+
+@app.get("/webhooks/whatsapp")
+async def whatsapp_verify(request: Request):
+    """Meta's one-time subscription check: echo hub.challenge only for our verify token."""
+    if whatsapp_cloud is None:
+        raise HTTPException(status_code=404)
+    q = request.query_params
+    challenge = whatsapp_cloud.verify_challenge(q.get("hub.mode", ""), q.get("hub.verify_token", ""),
+                                                q.get("hub.challenge", ""))
+    if challenge is None:
+        raise HTTPException(status_code=403)
+    return PlainTextResponse(challenge)
+
+
+@app.post("/webhooks/whatsapp")
+async def whatsapp_webhook(request: Request):
+    if whatsapp_cloud is None:
+        raise HTTPException(status_code=404)
+    raw = await request.body()
+    if len(raw) > 1_000_000:
+        raise HTTPException(status_code=413)
+    if not whatsapp_cloud.accept(raw, request.headers.get("x-hub-signature-256", "")):
+        raise HTTPException(status_code=401)
+    return {"ok": True}
 
 
 @app.get("/api/greeting")

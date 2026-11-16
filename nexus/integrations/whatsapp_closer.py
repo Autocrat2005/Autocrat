@@ -313,7 +313,7 @@ class WhatsAppCloser:
             "channel": channel,
         }
 
-    def apply_outcome(self, lead: Dict[str, Any], incoming: str, decision: Dict[str, Any]) -> None:
+    def apply_outcome(self, lead: Dict[str, Any], incoming: str, decision: Dict[str, Any], alert: bool = True) -> None:
         """Update lead state + alert founders. Called whether or not we send."""
         lead_id = lead["id"]
         self.store.log_event(lead_id, "message_in", {"text": incoming[:2000], "intent": decision.get("intent"),
@@ -326,7 +326,7 @@ class WhatsAppCloser:
                 self.store.transition(lead_id, "DNC", actor="closer", reason=decision["intent"])
             except Exception as e:
                 log.warning(f"DNC transition failed for {lead_id}: {e}")
-        if decision["hot"]:
+        if decision["hot"] and alert:
             name = lead.get("name") or lead.get("contact")
             where = "email" if decision.get("channel") == "email" else "WhatsApp"
             self.notifier.notify(f"🔴 Hot on {where}: *{name}* ({decision['intent']})\n{decision['summary']}",
