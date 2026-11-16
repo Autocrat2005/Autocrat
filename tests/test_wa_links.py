@@ -6,7 +6,7 @@ def test_normalize_uae_and_international():
     assert normalize("+971 55 765 4321") == "971557654321"
     assert normalize("00971501112233") == "971501112233"
     assert normalize("501112233") == "971501112233"
-    assert normalize("+91 98935 73666") == "919893573666"
+    assert normalize("+91 90000 00001") == "919000000001"
     assert normalize("12") == ""
 
 
