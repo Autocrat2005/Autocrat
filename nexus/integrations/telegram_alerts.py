@@ -46,7 +46,7 @@ def is_hiring_post(lead: Optional[Dict[str, Any]]) -> bool:
     if data.get("hiring"):
         return True
     text = str(data.get("text") or "").lower()
-    return (text.startswith("r/forhire:") and "[hiring]" in text) or text.startswith("seeking freelancer")
+    return (text.startswith(("r/forhire:", "r/jobbit:")) and "[hiring]" in text) or text.startswith("seeking freelancer")
 
 
 def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:

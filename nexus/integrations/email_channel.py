@@ -871,6 +871,10 @@ class EmailWorker:
             queue += self.store.list_outreach("staged", channel="email")
         queue = self.prioritise(queue)
         cap = self.cap_status()["cap"]
+        # Big cold lists must not eat the whole day: keep a share for leads with a live signal (hiring posts,
+        # launches, replies' follow-ups), whose send hours often come later in the day.
+        reserve = max(0, min(90, int(get_secret("EMAIL_RESERVE_PCT", "30") or 0)))
+        list_cap = cap - (cap * reserve) // 100
         sent = 0
         for out in queue:
             if sent_today + sent >= cap:
@@ -878,6 +882,9 @@ class EmailWorker:
             lead = self.store.get_lead(out["lead_id"])
             to = (lead or {}).get("contact") or ""
             if not lead or "@" not in to:
+                continue
+            from_list = "row" in (lead.get("data") or {}) and not (out.get("kind") or "").startswith("followup")
+            if from_list and sent_today + sent >= list_cap:
                 continue
             # Send inside the recipient's own business hours (US leads at 9am New York, not 2am).
             their_now = (now or datetime.now(timezone.utc)) + timedelta(

@@ -311,3 +311,21 @@ def test_threads_stay_in_their_inbox_and_new_ones_go_where_there_is_room(store):
     w = worker(store, pool)
     status = w.cap_status()
     assert status["cap"] == pool.primary_cap + pool.extra_capacity() and len(status["mailboxes"]) == 2
+
+
+def test_cold_lists_leave_room_for_leads_with_a_live_signal(store, monkeypatch):
+    live()
+    monkeypatch.setenv("EMAIL_RESERVE_PCT", "50")
+    t = RecentTransport()
+    w = worker(store, t)
+    w.daily_cap = 4
+    for i in range(4):
+        lead, _ = store.upsert_lead(source="list", dedupe_key=f"row{i}", channel="email", contact=f"b{i}@x.example",
+                                    market="UAE", data={"row": i})
+        store.stage_outreach(lead["id"], "email", "subject: hi" + chr(10) + "hey there")
+    lead, _ = store.upsert_lead(source="show_hn", dedupe_key="sig1", channel="email", contact="founder@y.example", market="UAE")
+    store.stage_outreach(lead["id"], "email", "subject: hi" + chr(10) + "hey, saw your launch")
+    assert w.send_openers(IN_HOURS) in (2, 3)
+    sent_to = [m["to"] for m in t.sent]
+    # list mail stops once the day's total reaches half the limit; the lead with a signal always gets through
+    assert "founder@y.example" in sent_to and 1 <= sum(a.startswith("b") for a in sent_to) <= 2

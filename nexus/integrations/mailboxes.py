@@ -145,7 +145,8 @@ class MailboxPool:
                         log.info(f"📬 {box.address} is readable: it can now start new threads")
             except Exception as e:
                 if getattr(box, "readable", None) is not False:
-                    log.warning(f"Reading {box.address} failed, so it won't start new threads yet: {e}")
+                    log.warning(f"Reading {box.address} failed: {e}" if box is self.primary else
+                                f"Reading {box.address} failed, so it won't start new threads yet: {e}")
                 box.readable = False
         return out
 
