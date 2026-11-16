@@ -40,6 +40,12 @@ def _lead_label(lead: Optional[Dict[str, Any]]) -> str:
     return f"<b>{html.escape(str(name))}</b>{market} (<code>{lead.get('id')}</code>)"
 
 
+def is_hiring_post(lead: Optional[Dict[str, Any]]) -> bool:
+    """r/forhire [Hiring] posts and HN 'SEEKING FREELANCER' comments: buyers with a budget, right now."""
+    text = str(((lead or {}).get("data") or {}).get("text") or "").lower()
+    return (text.startswith("r/forhire:") and "[hiring]" in text) or text.startswith("seeking freelancer")
+
+
 def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
     event = entry.get("event", "")
     data = entry.get("data") or {}
@@ -81,8 +87,8 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
         elif store and lead_id:
             staged = [o for o in store.outreach_for_lead(lead_id) if o["status"] == "staged"]
             outreach = staged[-1] if staged else None
-        if not outreach:
-            return None
+        if not outreach or outreach["channel"] == "call":
+            return None   # phone leads wait on the /calls sheet for their business hours, not as alerts
         draft = html.escape(outreach["draft"][:900])
         triage = ((lead or {}).get("data") or {}).get("triage") or {}
         score = ""
@@ -114,6 +120,10 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
         url = (lead or {}).get("url") or ""
         if url.startswith(("http://", "https://")):
             rows.append([{"text": "🔗 Open post", "url": url}])
+        if is_hiring_post(lead):
+            # Someone is paying for help right now: the first good reply usually wins.
+            return {"priority": "red", "buttons": rows,
+                    "text": f"⚡ HIRING POST · reply within the hour · {_lead_label(lead)}\n{score}{where}\n\n<i>{draft}</i>"}
         return {
             "priority": "orange",
             "text": f"🟠 Ready to send · {_lead_label(lead)}\n{score}{where}\n\n<i>{draft}</i>",

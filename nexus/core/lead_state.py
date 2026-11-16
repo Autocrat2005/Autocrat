@@ -100,7 +100,7 @@ def contact_key(channel: str, value: str) -> str:
     value = (value or "").strip()
     if not value:
         return ""
-    if channel in ("whatsapp", "wa", "phone", "sms"):
+    if channel in ("whatsapp", "wa", "phone", "sms", "call"):
         digits = re.sub(r"\D", "", value)
         if digits.startswith("00"):          # 00971… is the same number as +971…
             digits = digits[2:]

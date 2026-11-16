@@ -161,6 +161,14 @@ def build_system_prompt(voice: str, offers: Dict[str, Any], name: str = "Yash", 
                "as soon as they show real interest, propose the call")
     pay_usd = offers.get("deposit_link_usd") or ""
     pay_inr = offers.get("deposit_link_inr") or ""
+    if pay_usd or pay_inr:
+        payment = (f"- Deposit links (only when they say they want to start): USD/GBP/AED {pay_usd or '(Yash sends it)'}; "
+                   f"INR {pay_inr or '(Yash sends it)'}")
+    else:
+        payment = ("- Payment: Yash collects it himself. When they say they want to start, reply in ONE message: what "
+                   "they get, the price, 50% to start and the rest when it's live, and that Yash is sending the invoice "
+                   "with payment details in a few minutes. Never write payment or bank details yourself, never "
+                   "invent an invoice number or a link.")
     prompt = f"""You are replying on {channel} on behalf of Yash, co-founder of a two-person studio that ships
 fast workflow automations and small custom portals. Write exactly the way Yash writes (see the voice
 samples). Your job: understand what they need and move them to a call or a deposit, using CLOSER.
@@ -182,8 +190,13 @@ Offers (quote these freely when they ask or when you reach E):
 - Rapid workflow automation: from $1,250, usually delivered in about 7 days
 - Custom micro-SaaS portal: from $2,500
 - 50% deposit to start, rest on delivery
+- Quick-start offers (the easy first yes when the full build feels big, or they hesitate on price; paid
+  in full up front; the price is credited if they upgrade within 30 days):
+  WhatsApp auto-reply live in 48 hours, $399 (real estate / any WhatsApp-heavy business);
+  app health check + top 3 fixes done in 72 hours, $349 (AI-built Lovable/Bolt/Cursor apps)
 - Booking a call: {booking}
-- Deposit links (only when they say they want to start): USD/GBP/AED {pay_usd or '(ask Yash)'}; INR {pay_inr or '(ask Yash)'}
+{payment}
+- Lowest-risk next step when they hesitate: a free working demo on their own stuff before they pay anything.
 
 Style rules:
 - WhatsApp length: 1 to 3 short sentences, sometimes 2 short messages separated by a blank line.
@@ -202,7 +215,9 @@ Return ONLY a JSON object:
   "intent": one of {list(INTENTS)},
   "hot": true|false,
   "summary": "<one line for Yash about where this lead stands>",
-  "meeting": "<ISO time from the open times, ONLY once they confirmed it, else empty string>"}}
+  "meeting": "<ISO time from the open times, ONLY once they confirmed it, else empty string>",
+  "deal_usd": <the price in USD you quoted or they agreed to in this conversation, as a number, else 0>}}
+Use intent "ready_to_pay" only when they clearly said yes to going ahead (or asked how to pay).
 
 Everyone here is a prospect we contacted first: ALWAYS reply (sales is the goal) unless they said stop
 or not interested. If it's a canned support or ticket answer (a help desk, "check our docs/terms"), thank
@@ -333,7 +348,12 @@ class WhatsAppCloser:
                                       max_tokens=600, lead_id=lead_id)
         data = result.data if isinstance(result.data, dict) else {}
         intent = data.get("intent") if data.get("intent") in INTENTS else "other"
+        try:
+            deal = float(str(data.get("deal_usd") or 0).replace(",", "").replace("$", ""))
+        except ValueError:
+            deal = 0.0
         return {
+            "deal_usd": deal if 50 <= deal <= 1_000_000 else 0.0,
             "reply": humanize(str(data.get("reply") or "")),
             "intent": intent,
             "hot": bool(data.get("hot")) or intent in HOT_INTENTS,
@@ -348,7 +368,9 @@ class WhatsAppCloser:
         """Update lead state + alert founders. Called whether or not we send."""
         lead_id = lead["id"]
         self.store.log_event(lead_id, "message_in", {"text": incoming[:2000], "intent": decision.get("intent"),
-                                                     "hot": bool(decision.get("hot"))}, actor="prospect")
+                                                     "hot": bool(decision.get("hot")),
+                                                     **({"deal_usd": decision["deal_usd"]} if decision.get("deal_usd") else {})},
+                             actor="prospect")
         if decision.get("meeting"):
             self.store.log_event(lead_id, "meeting_booked", {"start": decision["meeting"],
                                                              "link": decision.get("meeting_link", ""),

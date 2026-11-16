@@ -39,7 +39,16 @@ def daily_brief(store, now: Optional[datetime] = None) -> str:
         for m in calls:
             lead = store.get_lead(m["lead_id"]) or {}
             lines.append(f"  • {booking.describe(m['start'], owner)} · {lead.get('company') or lead.get('name') or '?'} · {m['link']}")
+    from nexus.integrations import calls, deals
+    pending = deals.pending_deposits(store)
+    if pending:
+        lines.append("💰 Deposits waiting: " + " · ".join(
+            f"{r['lead'].get('company') or r['lead'].get('name') or r['lead_id']} "
+            f"{deals.money(r.get('amount', 0), r.get('currency', 'USD'))}" for r in pending[:6]))
     todo = []
+    to_call = len(calls.call_sheet(store, now, ignore_hours=True, limit=500))
+    if to_call:
+        todo.append(f"{to_call} number(s) on the call sheet: /calls in their business hours")
     if waiting:
         todo.append(f"{waiting} WhatsApp message(s) ready: type /wa")
     if open_replied:

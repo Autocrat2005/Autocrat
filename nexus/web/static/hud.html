@@ -56,7 +56,7 @@ header.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-
 .funnel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
 .funnel .h{height:64px;display:flex;align-items:flex-end}
 .funnel .h i{display:block;width:100%;border-radius:4px 4px 0 0}
-.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .stat{border:1px solid var(--line2);border-radius:8px;padding:10px 12px}
 .stat .k{font-size:11px;letter-spacing:.12em;color:var(--muted)} .stat .v{font:600 20px var(--mono)}
 .q{border:1px solid var(--line2);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px}
@@ -150,6 +150,7 @@ table.attr td.money{color:var(--amber);font-weight:600}
         <div class="stat"><div class="k">REPLY RATE</div><div class="v" id="replyRate">–</div></div>
         <div class="stat"><div class="k">LLM / LEAD</div><div class="v" id="costLead">–</div></div>
         <div class="stat"><div class="k">PAID IN</div><div class="v" id="wins" style="color:var(--amber)">–</div></div>
+        <div class="stat"><div class="k">ON THE TABLE</div><div class="v" id="onTable" style="color:var(--amber)">–</div></div>
       </div>
     </section>
 
@@ -280,6 +281,9 @@ table.attr td.money{color:var(--amber);font-weight:600}
     $('costLead').textContent = money(s.rates.cost_per_lead, 4);
     const paid = (s.revenue && s.revenue.paid) || {};
     $('wins').textContent = Object.keys(paid).length ? Object.entries(paid).map(([cur, v]) => `${cur === 'USD' ? '$' : cur + ' '}${Math.round(v).toLocaleString()}`).join(' · ') : '$0';
+    const table = (s.revenue && s.revenue.on_table) || {};
+    $('onTable').textContent = Object.keys(table).length ? Object.entries(table).map(([cur, v]) => `${cur === 'USD' ? '$' : cur + ' '}${Math.round(v).toLocaleString()}`).join(' · ') : '$0';
+    $('onTable').title = `${(s.revenue || {}).pending || 0} deposit request(s) out, not paid yet`;
 
     // money by source
     const attr = (s.attribution || []).filter(a => a.found || a.contacted);

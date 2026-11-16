@@ -203,11 +203,17 @@ def build_snapshot(engine) -> Dict[str, Any]:
     except Exception as e:
         cap = {"cap": int(get_secret("EMAIL_DAILY_CAP", "20") or 20), "note": str(e)}
 
+    from nexus.integrations.deals import pending_deposits
+    on_table: Dict[str, float] = {}
+    pending = pending_deposits(store)
+    for p in pending:
+        on_table[p.get("currency", "USD")] = round(on_table.get(p.get("currency", "USD"), 0) + float(p.get("amount") or 0), 2)
+
     rt = engine.runtime.status()
     return {
         "attribution": attribution,
         "revenue": {"paid": {k: round(v, 2) for k, v in paid_total.items()}, "won": reached.get("WON", 0),
-                    "deposits": reached.get("DEPOSIT_OPENED", 0)},
+                    "deposits": reached.get("DEPOSIT_OPENED", 0), "on_table": on_table, "pending": len(pending)},
         "replies": replies,
         "followups": {"staged": followups.get("staged", 0) + followups.get("approved", 0),
                       "sent": followups.get("sent", 0)},

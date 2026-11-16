@@ -51,6 +51,7 @@ MARKET_UTC_OFFSETS = {
     "uae": 240, "dubai": 240, "abu dhabi": 240, "saudi": 180, "qatar": 180,
     "india": 330, "uk": 0, "united kingdom": 0, "ireland": 0, "europe": 60, "germany": 60,
     "us": -300, "usa": -300, "united states": -300, "us east": -300, "us west": -480,
+    "us central": -360, "us mountain": -420, "us pacific": -480,
     "canada": -300, "toronto": -300, "vancouver": -480, "australia": 600, "sydney": 600,
     "singapore": 480, "global": None, "unknown": None,
 }
@@ -176,6 +177,14 @@ def reply_alert(lead: Dict[str, Any], sender: str, text: str, decision: Dict[str
     strike = strike_link(lead) if decision.get("hot") else ""
     if strike:
         out += f"\n📲 Strike while it's hot (you send): {strike}"
+    if decision.get("hot"):
+        from nexus.integrations.calls import phone_of
+        phone = phone_of(lead)
+        if phone and not strike:
+            out += f"\n📞 Call while it's warm: {phone}"
+    if decision.get("intent") == "ready_to_pay":
+        out += "\n💰 They're ready to pay: tap below to email the deposit request (Wise / bank), or type: invoice " \
+               f"{lead.get('id')} <amount>"
     return out
 
 
@@ -233,12 +242,27 @@ class AlertFanout:
     def __init__(self, notifiers):
         self.notifiers = [n for n in notifiers if n is not None]
 
-    def notify(self, text: str, priority: str = "orange") -> None:
+    def notify(self, text: str, priority: str = "orange", buttons=None, html_text: bool = False) -> None:
+        """Telegram gets HTML (plain text is escaped, so a '<' from a prospect can't break the alert) and
+        buttons; other channels get plain text."""
+        import html as _html
         for n in self.notifiers:
             try:
-                n.notify(text, priority=priority)
+                if hasattr(n, "alert_recipients"):
+                    n.notify(text if html_text else _html.escape(text, quote=False), priority=priority,
+                             buttons=buttons)
+                else:
+                    n.notify(_html.unescape(re.sub(r"<[^>]+>", "", text)) if html_text else text, priority=priority)
             except Exception as e:
                 log.warning(f"alert via {type(n).__name__} failed: {e}")
+
+
+_ACTIVE_WORKER: Optional["EmailWorker"] = None
+
+
+def active_worker() -> Optional["EmailWorker"]:
+    """The running email worker (for Telegram buttons and commands that send email)."""
+    return _ACTIVE_WORKER
 
 
 class EmailTransport:
@@ -398,6 +422,8 @@ class EmailWorker:
         if not self.transport.configured:
             log.info("Email: EMAIL_ADDRESS / EMAIL_PASSWORD not set, not starting")
             return False
+        global _ACTIVE_WORKER
+        _ACTIVE_WORKER = self
         self._thread = threading.Thread(target=self._loop, daemon=True, name="email-worker")
         self._thread.start()
         log.info(f"📧 Email channel on ({'auto-send openers' if self.auto_send else 'sends approved openers'}, "
@@ -426,7 +452,11 @@ class EmailWorker:
             except Exception as e:
                 log.warning(f"Follow-up staging failed: {e}")
         result = {"followups_staged": staged, "replied": self.handle_replies(), "sent": self.send_openers(now)}
+        from nexus.integrations import deals, precall
         for name, fn in (("reminders", self.meeting_reminders), ("nudged", self.nudge_quiet_conversations),
+                         ("debriefs", lambda: deals.ask_meeting_outcomes(self)),
+                         ("chased", lambda: deals.chase_payments(self)),
+                         ("packs", lambda: precall.prepare_packs(self)),
                          ("brief", self.maybe_daily_brief)):
             try:
                 result[name] = fn()
@@ -464,12 +494,13 @@ class EmailWorker:
                     self.store.kv_set(key, "1")
                     self.alerts.notify(f"⏰ Call with {who} in {int(mins)} min ({mine}) · {m['link']}", "red")
                     sent += 1
-                    if label == "60" and "@" in (lead.get("contact") or "") and not RuntimeControl().is_dry_run \
+                    from nexus.integrations.deals import email_of
+                    if label == "60" and email_of(lead) and not RuntimeControl().is_dry_run \
                             and not RuntimeControl().killed:
                         thread = self._thread_of(lead["id"])
                         theirs = booking.describe(m["start"], int(m.get("their_offset") or 0))
                         try:
-                            self.transport.send(lead["contact"], f"Re: {thread['subject'] or 'our call'}".replace("Re: Re:", "Re:"),
+                            self.transport.send(email_of(lead), f"Re: {thread['subject'] or 'our call'}".replace("Re: Re:", "Re:"),
                                                 f"quick reminder, we're on at {theirs} your time: {m['link']}\n\n{self.signature}",
                                                 in_reply_to=thread["last_id"], references=thread["message_id"])
                         except Exception as e:
@@ -487,9 +518,10 @@ class EmailWorker:
         hours = float(get_secret("EMAIL_NUDGE_HOURS", "48") or 48)
         sent = 0
         rows = self.store._conn().execute("SELECT id FROM leads WHERE state='REPLIED' ORDER BY updated_at LIMIT 40").fetchall()
+        from nexus.integrations.deals import email_of
         for (lead_id,) in rows:
             lead = self.store.get_lead(lead_id)
-            if "@" not in (lead.get("contact") or ""):
+            if not email_of(lead):
                 continue
             events = self.store.lead_events(lead_id)
             talk = [e for e in events if e["type"] in ("message_in", "message_out")]
@@ -525,7 +557,7 @@ class EmailWorker:
             thread = self._thread_of(lead_id)
             subject = thread["subject"] if thread["subject"].lower().startswith("re:") else f"Re: {thread['subject'] or 'quick one'}"
             try:
-                msg_id = self.transport.send(lead["contact"], subject, f"{draft}\n\n{self.signature}",
+                msg_id = self.transport.send(email_of(lead), subject, f"{draft}\n\n{self.signature}",
                                              in_reply_to=thread["last_id"], references=thread["message_id"])
             except Exception as e:
                 log.info(f"nudge send failed for {lead_id}: {e}")
@@ -871,8 +903,18 @@ class EmailWorker:
             else:
                 outcome = "no auto-reply: your move"
             log.info(f"📩 reply from {mail['from']} ({decision.get('intent')}): {outcome.splitlines()[0][:120]}")
-            self.alerts.notify(reply_alert(lead, mail["from"], text, decision, outcome),
-                               "red" if decision.get("hot") else "orange")
+            sender = parseaddr(mail["from"])[1].lower() or mail["from"].lower()
+            fresh = self.store.get_lead(lead["id"]) or lead
+            if "@" in sender and sender != (fresh.get("contact") or "").lower() and \
+                    (fresh.get("data") or {}).get("reply_to") != sender:
+                # A colleague answered: they're the one talking to us now (invoices and follow-ups go to them).
+                fresh = self.store.update_lead_fields(lead["id"], data={**(fresh.get("data") or {}), "reply_to": sender})
+            buttons = None
+            if decision.get("intent") == "ready_to_pay":
+                from nexus.integrations.deals import money_buttons
+                buttons = money_buttons(self.store, fresh) or None
+            self.alerts.notify(reply_alert(fresh, mail["from"], text, decision, outcome),
+                               "red" if decision.get("hot") else "orange", buttons=buttons)
             self.store.kv_set(key, "replied")
             if not mail.get("seen"):
                 self.transport.mark_seen(mail["uid"])

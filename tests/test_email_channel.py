@@ -29,8 +29,9 @@ class FakeAlerts:
     def __init__(self):
         self.items = []
 
-    def notify(self, text, priority="orange"):
+    def notify(self, text, priority="orange", buttons=None, html_text=False):
         self.items.append((priority, text))
+        self.buttons = buttons
 
 
 class FakeCloser:

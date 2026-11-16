@@ -47,6 +47,14 @@ class PipelinePlugin(NexusPlugin):
                               "paid <id> <amount> [currency] [final]", side_effect="internal",
                               patterns=[r"^paid\s+(?P<lead_id>[0-9a-f]{12})\s+\$?(?P<amount>[\d,]+(?:\.\d+)?)"
                                         r"(?:\s+(?P<currency>[A-Za-z]{3}))?(?:\s+(?P<kind>final|deposit))?$"])
+        self.register_command("lead_invoice", self.lead_invoice,
+                              "Email the deposit request (invoice number, amount, how to pay)",
+                              "invoice <id> [amount] [currency]", side_effect="external",
+                              patterns=[r"^invoice\s+(?P<lead_id>[0-9a-f]{12})(?:\s+\$?(?P<amount>[\d,]+(?:\.\d+)?))?"
+                                        r"(?:\s+(?P<currency>[A-Za-z]{3}))?$"])
+        self.register_command("lead_email", self.lead_email, "Save a lead's email (e.g. one you got on a call)",
+                              "email <id> <address>", side_effect="internal",
+                              patterns=[r"^email\s+(?P<lead_id>[0-9a-f]{12})\s+(?P<address>\S+@\S+)$"])
         self.register_command("outreach_stage", self.outreach_stage, "Stage a first-touch draft",
                               "stage <id> <draft>", side_effect="internal")
         self.register_command("outreach_approve", self.outreach_approve,
@@ -129,6 +137,24 @@ class PipelinePlugin(NexusPlugin):
         return {"success": True, "payment": pay,
                 "result": f"💰 {pay['currency']} {pay['amount']:,.2f} {pay['kind']} recorded for "
                           f"{lead.get('company') or lead.get('name') or lead['id']} (now {lead['state']})"}
+
+    def lead_invoice(self, lead_id: str = "", amount: str = "", currency: str = "", **kwargs):
+        from nexus.integrations import deals
+        from nexus.integrations.email_channel import active_worker
+        try:
+            value = float(str(amount).replace(",", "")) if amount else None
+        except ValueError as e:
+            return self._err(e)
+        res = deals.request_payment(self.store, active_worker(), str(lead_id), amount=value,
+                                    currency=(currency or "USD").upper(), actor=current_actor())
+        return {"success": True, "result": res["note"]} if res.get("ok") else {"success": False, "error": res["note"]}
+
+    def lead_email(self, lead_id: str = "", address: str = "", **kwargs):
+        from nexus.integrations import calls
+        from nexus.integrations.email_channel import active_worker
+        note = calls.set_email(self.store, active_worker(), str(lead_id), str(address), actor=current_actor())
+        ok = not note.startswith(("Unknown", "That "))
+        return {"success": True, "result": note} if ok else {"success": False, "error": note}
 
     def outreach_stage(self, lead_id: str = "", draft: str = "", channel: str = "", **kwargs):
         lead = self.store.get_lead(str(lead_id))

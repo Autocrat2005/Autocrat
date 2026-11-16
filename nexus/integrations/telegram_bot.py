@@ -249,9 +249,12 @@ class TelegramBot:
             app.add_handler(CommandHandler("id", self._cmd_id))
             app.add_handler(CommandHandler("lead", self._cmd_lead))
             app.add_handler(CommandHandler("wa", self._cmd_wa))
+            app.add_handler(CommandHandler("calls", self._cmd_calls))
+            app.add_handler(CommandHandler("deals", self._cmd_deals))
             # Forward any message (Discord copy, Reddit link, group chat) to the bot = capture it as a lead
             app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND, self._handle_forward))
-            app.add_handler(CallbackQueryHandler(self._handle_callback, pattern=r"^(approve|reject|oa|os|ws|dnc):"))
+            app.add_handler(CallbackQueryHandler(self._handle_callback,
+                                                 pattern=r"^(approve|reject|oa|os|ws|dnc|pay|mo|cl|pt):"))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
             log.info("📱 Telegram bot polling started")
             await app.initialize()
@@ -389,6 +392,47 @@ class TelegramBot:
                     for i, r in enumerate(ready[start:start + 20])]
             await update.message.reply_text(f"Batch {start // 20 + 1}", reply_markup=self._keyboard(rows))
 
+    def money_action(self, kind: str, lead_id: str, code: str, actor: str) -> Dict[str, Any]:
+        """Buttons that move money or calls: deposit request, call debrief, call outcome, pre-call note."""
+        from nexus.integrations import calls, deals, precall
+        from nexus.integrations.email_channel import active_worker
+        worker, store = active_worker(), self.store
+        if kind == "pay":
+            return {"note": deals.request_payment(store, worker, lead_id, actor=actor)["note"]}
+        if kind == "mo":
+            return deals.apply_meeting_outcome(store, worker, lead_id, code, actor=actor)
+        if kind == "cl":
+            return {"note": calls.log_call(store, worker, lead_id, code, actor=actor)}
+        return {"note": precall.send_teaser(store, worker, lead_id, actor=actor)}
+
+    async def _cmd_calls(self, update, context):
+        """/calls: who to ring right now (their business hours), what to say, one tap to log the result."""
+        if not await self._is_authorized(update):
+            return
+        from nexus.integrations import calls
+        sheet = await asyncio.get_running_loop().run_in_executor(None, lambda: calls.call_sheet(self.store))
+        if not sheet:
+            waiting = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: len(calls.call_sheet(self.store, ignore_hours=True, limit=500)))
+            await update.message.reply_text(
+                "📞 Nobody to ring right now." + (f" {waiting} number(s) are waiting for their business hours "
+                                                 "(US Eastern 9am-5pm = 7:30pm-3:30am your time)." if waiting else
+                                                 " The sheet fills from lists with phone numbers (and hot replies)."))
+            return
+        await update.message.reply_text(f"📞 {len(sheet)} to ring now. Tap the number to dial, then tap how it went.")
+        for i, item in enumerate(sheet, 1):
+            await update.message.reply_text(calls.sheet_card(item, i), parse_mode="HTML",
+                                            disable_web_page_preview=True,
+                                            reply_markup=self._keyboard(calls.card_buttons(item["lead"]["id"])))
+
+    async def _cmd_deals(self, update, context):
+        """/deals: deposits waiting, calls booked, hot leads to strike, money in."""
+        if not await self._is_authorized(update):
+            return
+        from nexus.integrations import deals
+        text = await asyncio.get_running_loop().run_in_executor(None, lambda: deals.money_board(self.store))
+        await update.message.reply_text(text[:3900], parse_mode="HTML", disable_web_page_preview=True)
+
     def mark_whatsapp_sent(self, outreach_id: str, actor: str) -> str:
         """You sent it by hand: approve (if needed) and mark sent in one step."""
         store = self.store
@@ -429,6 +473,10 @@ class TelegramBot:
             "/plugins — loaded plugins\n"
             "/lead &lt;text or link&gt; — capture a lead you spotted (or just forward the message here)\n"
             "/wa &lt;message, {name} optional&gt; + numbers on new lines — tap-to-send WhatsApp links (you press send)\n"
+            "/deals — money board: deposits waiting, calls booked, hot leads to strike\n"
+            "/calls — who to ring right now, what to say, one tap to log how it went\n"
+            "<code>invoice &lt;lead id&gt; [amount] [USD]</code> — email the deposit request (Wise / bank)\n"
+            "<code>email &lt;lead id&gt; name@company.com</code> — save an email you got on a call\n"
             "<code>paid &lt;lead id&gt; 625 USD</code> — log a deposit (add <code>final</code> when fully paid)\n"
             "<code>radar</code> / <code>radar run hn</code> — radar status / run a source now\n\n"
             "Or type any command, e.g. <code>leads staged</code>, <code>pipeline</code>.",
@@ -523,6 +571,22 @@ class TelegramBot:
             output = result.get("result", result.get("error", "No output"))
             await query.edit_message_text(f"{icon} {html.escape(str(output))[:3500]}\n— {html.escape(actor)}",
                                           parse_mode="HTML")
+            return
+
+        if kind in ("pay", "mo", "cl", "pt"):
+            lead_id, _, code = ident.partition(":")
+            self._audit(actor, f"button_{kind}", {"lead_id": lead_id, "code": code})
+            try:
+                res = await asyncio.get_running_loop().run_in_executor(None, self.money_action, kind, lead_id, code,
+                                                                       actor)
+            except Exception as e:
+                res = {"note": f"❌ {e}", "buttons": []}
+            try:   # one tap only: the same card can't send twice
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await query.message.reply_text(str(res.get("note") or "Done.")[:3900], disable_web_page_preview=True,
+                                           reply_markup=self._keyboard(res.get("buttons") or []))
             return
 
         if kind == "ws":
