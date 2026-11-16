@@ -47,8 +47,16 @@ def test_staged_alert_has_approve_button(store):
     t = store.transition(lead["id"], "STAGED", payload={"outreach_id": out["id"]})
     alert = build_alert({"event": "lead.transition", "data": t}, store=store)
     assert alert["priority"] == "orange"
-    assert alert["buttons"][0][0]["callback_data"] == f"oa:{out['id']}"
+    # WhatsApp drafts: open the phone app with the message (wa.me, never WhatsApp Web) + one-tap "sent"
+    assert alert["buttons"][0][0]["url"].startswith("https://wa.me/971500000001?text=Hello")
+    assert alert["buttons"][0][1]["callback_data"] == f"ws:{out['id']}"
+    assert "web.whatsapp.com" not in str(alert)
     assert "&lt;b&gt;" in alert["text"]          # draft is HTML-escaped
+    email_lead, _ = store.upsert_lead(source="t", dedupe_key="k2", name="Acme", channel="email", contact="a@acme.com")
+    store.transition(email_lead["id"], "TRIAGED")
+    eo = store.stage_outreach(email_lead["id"], "email", "subject: hi\nhey")
+    et = store.transition(email_lead["id"], "STAGED", payload={"outreach_id": eo["id"]})
+    assert build_alert({"event": "lead.transition", "data": et}, store=store)["buttons"][0][0]["callback_data"] == f"oa:{eo['id']}"
     after = approved_buttons(out["id"], compose_links("whatsapp", "+971500000001", "hi"))
     assert after[0][0]["url"].startswith("https://wa.me/") and after[0][1]["callback_data"] == f"os:{out['id']}"
     assert all(len(b.get("callback_data", "")) <= 64 for row in after for b in row)
@@ -76,3 +84,20 @@ def test_reports_become_alerts_and_long_messages_split():
     parts = TelegramBot._chunks(long)
     assert len(parts) > 1 and all(len(p) <= 3900 for p in parts)
     assert "\n".join(parts) == long
+
+
+def test_ready_whatsapp_links_and_mark_sent(store):
+    from types import SimpleNamespace
+    from nexus.integrations.telegram_bot import TelegramBot
+    lead, _ = store.upsert_lead(source="uae_brokers", dedupe_key="b9", company="Palm Realty", channel="whatsapp",
+                                contact="+971501234567", market="UAE")
+    store.transition(lead["id"], "TRIAGED")
+    out = store.stage_outreach(lead["id"], "whatsapp", "hey omar, who answers portal leads after 9pm?")
+    store.transition(lead["id"], "STAGED", payload={"outreach_id": out["id"]})
+    bot = TelegramBot.__new__(TelegramBot)
+    bot.bus, bot._store = None, store
+    ready = bot.ready_whatsapp()
+    assert ready[0]["url"] == "https://wa.me/971501234567?text=hey%20omar%2C%20who%20answers%20portal%20leads%20after%209pm%3F"
+    assert "Sent to Palm Realty" in bot.mark_whatsapp_sent(out["id"], "telegram:1")
+    assert store.get_outreach(out["id"])["status"] == "sent" and store.get_lead(lead["id"])["state"] == "SENT"
+    assert bot.ready_whatsapp() == [] and bot.mark_whatsapp_sent(out["id"], "telegram:1") == "Already marked sent."

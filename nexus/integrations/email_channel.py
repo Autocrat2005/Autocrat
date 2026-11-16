@@ -76,6 +76,58 @@ def needs_postal(market: str) -> bool:
     return any(key == m or key.startswith(m + " ") or m in key.split(", ") for m in POSTAL_MARKETS)
 
 
+FREEMAIL = {"gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com", "icloud.com",
+            "me.com", "aol.com", "proton.me", "protonmail.com", "zoho.com", "zohomail.com", "zohomail.in", "gmx.com",
+            "yandex.com", "mail.com", "msn.com", "rediffmail.com", "yahoo.co.in", "ymail.com"}
+AUTO_SUBJECT = re.compile(r"^\s*(auto(matic)?[ -]?(reply|response)|autoreply|out of (the )?office|ooo\b|away:|auto:)", re.I)
+
+
+def html_to_text(raw: str) -> str:
+    import html as _html
+    raw = re.sub(r"(?is)<(script|style|head).*?</\1>", " ", raw or "")
+    raw = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|</li>|</h\d>", "\n", raw)
+    text = _html.unescape(re.sub(r"<[^>]+>", " ", raw))
+    return "\n".join(" ".join(line.split()) for line in text.splitlines() if line.strip())
+
+
+def is_auto_reply(msg) -> bool:
+    """Out-of-office and robot replies: recorded, never counted as a reply, never answered."""
+    auto = (msg.get("Auto-Submitted") or "").strip().lower()
+    if auto and auto != "no":
+        return True
+    if msg.get("X-Autoreply") or msg.get("X-Autorespond") or msg.get("X-Autoresponse"):
+        return True
+    if (msg.get("Precedence") or "").strip().lower() in ("auto_reply", "bulk", "junk"):
+        return True
+    return bool(AUTO_SUBJECT.search(msg.get("Subject") or ""))
+
+
+def parse_mail(raw: bytes, uid: str = "", flags: str = "") -> Dict[str, Any]:
+    from email.header import decode_header, make_header
+    msg = email.message_from_bytes(raw or b"")
+    plain, html_body = "", ""
+    for part in (msg.walk() if msg.is_multipart() else [msg]):
+        if part.get_filename():
+            continue
+        ctype = part.get_content_type()
+        if ctype in ("text/plain", "text/html"):
+            text = (part.get_payload(decode=True) or b"").decode(part.get_content_charset() or "utf-8", "replace")
+            if ctype == "text/plain" and not plain:
+                plain = text
+            elif ctype == "text/html" and not html_body:
+                html_body = text
+    try:
+        subject = str(make_header(decode_header(msg.get("Subject", ""))))
+    except Exception:
+        subject = msg.get("Subject", "")
+    dsn = " ".join(str(part) for part in msg.walk()
+                   if part.get_content_type() in ("message/delivery-status", "text/rfc822-headers"))
+    return {"uid": uid, "seen": "\\Seen" in (flags or ""), "from": parseaddr(msg.get("From", ""))[1].lower(),
+            "subject": subject, "message_id": msg.get("Message-ID", "").strip(),
+            "in_reply_to": msg.get("In-Reply-To", "").strip(), "references": msg.get("References", ""),
+            "body": plain.strip() or html_to_text(html_body), "dsn": dsn[:4000], "auto": is_auto_reply(msg)}
+
+
 BOUNCE_SENDERS = ("mailer-daemon", "postmaster", "mail-daemon", "mailerdaemon")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -117,8 +169,35 @@ def reply_alert(lead: Dict[str, Any], sender: str, text: str, decision: Dict[str
         who = f"{lead['name']} ({lead['company']})"
     head = "🔴 HOT email reply" if decision.get("hot") else "📩 Email reply"
     said = " ".join((text or "").split())[:400]
-    return (f"{head} from {who} · {decision.get('intent') or 'other'}\n"
-            f"“{said}”\n↳ {outcome[:600]}")
+    out = (f"{head} from {who} · {decision.get('intent') or 'other'}\n"
+           f"“{said}”\n↳ {outcome[:600]}")
+    if decision.get("meeting"):
+        out = meeting_line(decision) + "\n" + out
+    strike = strike_link(lead) if decision.get("hot") else ""
+    if strike:
+        out += f"\n📲 Strike while it's hot (you send): {strike}"
+    return out
+
+
+def meeting_line(decision: Dict[str, Any]) -> str:
+    from nexus.integrations import booking
+    t = datetime.fromisoformat(decision["meeting"].replace("Z", "+00:00"))
+    mine = booking.describe(t, int(get_secret("OWNER_UTC_OFFSET_MINUTES", "330") or 330))
+    theirs = booking.describe(t, int(decision.get("their_offset") or 0))
+    return f"📅 MEETING BOOKED: {mine} your time ({theirs} theirs) · {decision.get('meeting_link', '')}"
+
+
+def strike_link(lead: Dict[str, Any]) -> str:
+    """wa.me link with a short note, when we know their mobile. You press send; no automation, no tokens."""
+    from urllib.parse import quote
+    from nexus.integrations.wa_links import normalize
+    phone = (lead.get("data") or {}).get("phone") or (lead.get("contact") if (lead.get("contact") or "").startswith("+") else "")
+    number = normalize(phone or "")
+    if not number:
+        return ""
+    first = (lead.get("name") or "").split()[0].title() if lead.get("name") else ""
+    note = f"hi{' ' + first if first else ''}, yash here, just saw your email. easier to sort this on whatsapp?"
+    return f"https://wa.me/{number}?text={quote(note)}"
 
 
 QUOTE_MARKERS = [re.compile(p, re.I | re.M) for p in (
@@ -177,7 +256,10 @@ class EmailTransport:
     def configured(self) -> bool:
         return bool(self.address and self.password)
 
-    def send(self, to: str, subject: str, body: str, in_reply_to: str = "", references: str = "") -> str:
+    def send(self, to: str, subject: str, body: str, in_reply_to: str = "", references: str = "", ics: str = "") -> str:
+        # Headers copied from incoming mail can be folded over several lines: flatten them first.
+        clean = lambda v: " ".join(str(v or "").split())  # noqa: E731
+        subject, in_reply_to, references, to = clean(subject), clean(in_reply_to), clean(references), clean(to)
         msg = EmailMessage()
         msg["From"] = f"{self.from_name} <{self.address}>"
         msg["To"] = to
@@ -188,6 +270,9 @@ class EmailTransport:
             msg["In-Reply-To"] = in_reply_to
             msg["References"] = (references + " " + in_reply_to).strip()
         msg.set_content(body)
+        if ics:   # calendar invite: lands in their calendar with one click
+            msg.add_attachment(ics.encode("utf-8"), maintype="text", subtype="calendar",
+                               filename="invite.ics", params={"method": "REQUEST"})
         context = ssl.create_default_context()
         if self.smtp_port == 465:
             with smtplib.SMTP_SSL(self.smtp_host, self.smtp_port, context=context, timeout=30) as s:
@@ -224,21 +309,54 @@ class EmailTransport:
             for uid in uids[-limit:]:
                 _, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")  # PEEK: don't mark read yet
                 raw = msg_data[0][1] if msg_data and msg_data[0] else b""
-                msg = email.message_from_bytes(raw)
-                body = ""
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() == "text/plain" and not part.get_filename():
-                            body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "replace")
-                            break
-                else:
-                    body = (msg.get_payload(decode=True) or b"").decode(msg.get_content_charset() or "utf-8", "replace")
-                dsn = " ".join(str(part) for part in msg.walk()
-                               if part.get_content_type() in ("message/delivery-status", "text/rfc822-headers"))
-                out.append({"dsn": dsn[:4000], "uid": uid.decode(), "from": parseaddr(msg.get("From", ""))[1].lower(),
-                            "subject": msg.get("Subject", ""), "message_id": msg.get("Message-ID", ""),
-                            "references": msg.get("References", ""), "body": body})
+                out.append(parse_mail(raw, uid.decode()))
         return out
+
+    def fetch_recent(self, days: int = 3, limit: int = 40,
+                     wanted: Optional[Callable[[Dict[str, str]], bool]] = None) -> List[Dict[str, Any]]:
+        """Mail from the last `days`, read or not (you may open a reply in Zoho before Autocrat does).
+        Headers of everything are checked first; only wanted mail is downloaded (PEEK: nothing is marked read)."""
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%d-%b-%Y")
+        out = []
+        with imaplib.IMAP4_SSL(self.imap_host, 993) as imap:
+            imap.login(self.address, self.password)
+            imap.select("INBOX", readonly=True)
+            _, data = imap.uid("search", None, f"SINCE {since}")
+            uids = data[0].split() if data and data[0] else []
+            if wanted and uids:
+                _, headers = imap.uid("fetch", b",".join(uids),
+                                      "(BODY.PEEK[HEADER.FIELDS (FROM MESSAGE-ID IN-REPLY-TO REFERENCES)])")
+                keep = []
+                for item in headers or []:
+                    if not isinstance(item, tuple):
+                        continue
+                    uid_match = re.search(rb"UID (\d+)", item[0])
+                    h = email.message_from_bytes(item[1])
+                    info = {"from": parseaddr(h.get("From", ""))[1].lower(), "in_reply_to": h.get("In-Reply-To", ""),
+                            "references": h.get("References", ""), "message_id": h.get("Message-ID", "")}
+                    if uid_match and wanted(info):
+                        keep.append(uid_match.group(1))
+                uids = keep
+            for uid in uids[-limit:]:
+                _, msg_data = imap.uid("fetch", uid, "(FLAGS BODY.PEEK[])")
+                if not msg_data or not isinstance(msg_data[0], tuple):
+                    continue
+                out.append(parse_mail(msg_data[0][1], uid.decode(), msg_data[0][0].decode(errors="replace")))
+        return out
+
+    def answered_by_me(self, message_id: str) -> bool:
+        """Did you already reply by hand (a message in Sent that answers this one)?"""
+        if not message_id:
+            return False
+        try:
+            with imaplib.IMAP4_SSL(self.imap_host, 993) as imap:
+                imap.login(self.address, self.password)
+                imap.select(get_secret("EMAIL_SENT_FOLDER", "Sent"), readonly=True)
+                _, data = imap.uid("search", None, "HEADER", "In-Reply-To", message_id.strip("<>"))
+                return bool(data and data[0])
+        except Exception as e:
+            log.info(f"Sent-folder check failed: {e}")
+            return False
 
     def mark_seen(self, uid: str) -> None:
         with imaplib.IMAP4_SSL(self.imap_host, 993) as imap:
@@ -307,9 +425,128 @@ class EmailWorker:
                 staged = self.stage_followups()
             except Exception as e:
                 log.warning(f"Follow-up staging failed: {e}")
-        return {"followups_staged": staged, "sent": self.send_openers(now), "replied": self.handle_replies()}
+        result = {"followups_staged": staged, "replied": self.handle_replies(), "sent": self.send_openers(now)}
+        for name, fn in (("reminders", self.meeting_reminders), ("nudged", self.nudge_quiet_conversations),
+                         ("brief", self.maybe_daily_brief)):
+            try:
+                result[name] = fn()
+            except Exception as e:
+                log.warning(f"Email {name} failed: {e}")
+        return result
 
     # ── warm-up cap ──────────────────────────────────────────────
+
+    # ── meetings: invite, reminders ──────────────────────────────
+
+    def invite_for(self, lead: Dict[str, Any], decision: Dict[str, Any], to: str) -> str:
+        if not decision.get("meeting"):
+            return ""
+        from nexus.integrations import booking
+        start = datetime.fromisoformat(decision["meeting"].replace("Z", "+00:00"))
+        who = lead.get("company") or lead.get("name") or to
+        return booking.ics_invite(start, summary=f"{self.signature} x {who}", link=decision.get("meeting_link", ""),
+                                  organizer=getattr(self.transport, "address", "") or "", attendee=to,
+                                  minutes=int(get_secret("MEETING_MINUTES", "20") or 20), uid=f"{lead['id']}-{start:%Y%m%d%H%M}")
+
+    def meeting_reminders(self, now: Optional[datetime] = None) -> int:
+        """Telegram 60 and 10 minutes before; a one-line reminder email to them 60 minutes before."""
+        from nexus.integrations import booking
+        now = now or datetime.now(timezone.utc)
+        sent = 0
+        for m in booking.booked_meetings(self.store, since=now):
+            mins = (m["start"] - now).total_seconds() / 60
+            lead = self.store.get_lead(m["lead_id"]) or {}
+            who = lead.get("company") or lead.get("name") or lead.get("contact") or "them"
+            mine = booking.describe(m["start"], int(get_secret("OWNER_UTC_OFFSET_MINUTES", "330") or 330))
+            for window, label in ((65, "60"), (12, "10")):
+                key = f"meeting:remind{label}:{m['lead_id']}:{m['start']:%Y%m%d%H%M}"
+                if 0 < mins <= window and not self.store.kv_get(key):
+                    self.store.kv_set(key, "1")
+                    self.alerts.notify(f"⏰ Call with {who} in {int(mins)} min ({mine}) · {m['link']}", "red")
+                    sent += 1
+                    if label == "60" and "@" in (lead.get("contact") or "") and not RuntimeControl().is_dry_run \
+                            and not RuntimeControl().killed:
+                        thread = self._thread_of(lead["id"])
+                        theirs = booking.describe(m["start"], int(m.get("their_offset") or 0))
+                        try:
+                            self.transport.send(lead["contact"], f"Re: {thread['subject'] or 'our call'}".replace("Re: Re:", "Re:"),
+                                                f"quick reminder, we're on at {theirs} your time: {m['link']}\n\n{self.signature}",
+                                                in_reply_to=thread["last_id"], references=thread["message_id"])
+                        except Exception as e:
+                            log.info(f"meeting reminder email failed: {e}")
+        return sent
+
+    # ── conversations that went quiet after they replied ─────────
+
+    def nudge_quiet_conversations(self, now: Optional[datetime] = None) -> int:
+        """They replied, we answered, then silence: one short nudge after EMAIL_NUDGE_HOURS (48),
+        a second after another 72h, then stop. Business hours only, inside the daily cap."""
+        if RuntimeControl().is_dry_run or RuntimeControl().killed:
+            return 0
+        now = now or datetime.now(timezone.utc)
+        hours = float(get_secret("EMAIL_NUDGE_HOURS", "48") or 48)
+        sent = 0
+        rows = self.store._conn().execute("SELECT id FROM leads WHERE state='REPLIED' ORDER BY updated_at LIMIT 40").fetchall()
+        for (lead_id,) in rows:
+            lead = self.store.get_lead(lead_id)
+            if "@" not in (lead.get("contact") or ""):
+                continue
+            events = self.store.lead_events(lead_id)
+            talk = [e for e in events if e["type"] in ("message_in", "message_out")]
+            nudges = sum(1 for e in events if e["type"] == "message_out" and (e.get("payload") or {}).get("kind") == "nudge")
+            if not talk or talk[-1]["type"] != "message_out" or nudges >= 2:
+                continue
+            wait = hours if nudges == 0 else hours + 72
+            if (now.timestamp() - float(talk[-1]["ts"])) < wait * 3600:
+                continue
+            their_now = now + timedelta(minutes=market_offset(lead.get("market") or "", self.offset))
+            if not self._in_hours(their_now):
+                continue
+            if any(m["lead_id"] == lead_id for m in __import__("nexus.integrations.booking", fromlist=["x"]).booked_meetings(self.store)):
+                continue   # a call is already booked: don't chase
+            transcript = "\n\n".join(f"{'Me' if e['type'] == 'message_out' else 'Them'}: {(e.get('payload') or {}).get('text', '')[:500]}"
+                                     for e in talk[-6:])
+            try:
+                from nexus.integrations.whatsapp_closer import humanize
+                result = self.closer.router.complete(
+                    f"Conversation (latest last):\n{transcript}", task="copy", json_mode=True, max_tokens=400,
+                    lead_id=lead_id, system=("Write a short follow-up from Yash in this email thread: they went quiet after "
+                                             "our last message. 1-2 casual lowercase sentences in Yash's voice, pick up exactly "
+                                             "where it stopped, make replying easy (a yes/no question or two concrete call times). "
+                                             + ("Last nudge: say you'll leave it here and the door is open. " if nudges else "")
+                                             + "No dashes, no placeholders, never invent anything. Return ONLY JSON {\"draft\": \"...\"}\n\n"
+                                             f"Yash's voice:\n{(getattr(self.closer, 'voice', '') or '')[:2000]}"))
+                draft = humanize(str((result.data or {}).get("draft") or "")).strip() if isinstance(result.data, dict) else ""
+            except Exception as e:
+                log.info(f"nudge draft failed for {lead_id}: {e}")
+                continue
+            if not draft or PLACEHOLDER_RE.search(draft):
+                continue
+            thread = self._thread_of(lead_id)
+            subject = thread["subject"] if thread["subject"].lower().startswith("re:") else f"Re: {thread['subject'] or 'quick one'}"
+            try:
+                msg_id = self.transport.send(lead["contact"], subject, f"{draft}\n\n{self.signature}",
+                                             in_reply_to=thread["last_id"], references=thread["message_id"])
+            except Exception as e:
+                log.info(f"nudge send failed for {lead_id}: {e}")
+                continue
+            self.store.log_event(lead_id, "message_out", {"text": draft, "subject": subject, "message_id": msg_id,
+                                                          "channel": "email", "kind": "nudge"}, actor="closer")
+            self.alerts.notify(f"🔁 Nudged {lead.get('company') or lead['contact']} (quiet {int(wait)}h+): {draft}", "orange")
+            sent += 1
+        return sent
+
+    def maybe_daily_brief(self, now: Optional[datetime] = None) -> bool:
+        """09:00 your time: yesterday's numbers + today's calls + what needs you. Template only, no tokens."""
+        now = now or datetime.now(timezone.utc)
+        mine = now + timedelta(minutes=int(get_secret("OWNER_UTC_OFFSET_MINUTES", "330") or 330))
+        key = f"brief:{mine:%Y-%m-%d}"
+        if mine.hour < int(get_secret("DAILY_BRIEF_HOUR", "9") or 9) or self.store.kv_get(key):
+            return False
+        self.store.kv_set(key, "1")
+        from nexus.integrations.brief import daily_brief
+        self.alerts.notify(daily_brief(self.store, now), "red")
+        return True
 
     def whatsapp_line(self, lead: Dict[str, Any]) -> str:
         """'or just whatsapp me' + a wa.me link whose prefilled text carries the lead's ref.
@@ -503,6 +740,8 @@ class EmailWorker:
             lead = self.store.find_lead_by_contact(key)
             if not lead or not any(o["status"] == "sent" for o in self.store.outreach_for_lead(lead["id"])):
                 continue
+            if any(e["type"] == "bounce" for e in self.store.lead_events(lead["id"])):
+                return True   # already handled (e.g. seen again by the recent-mail scan): count each bounce once
             self.store.suppress(key, "bounced")
             self.store.log_event(lead["id"], "bounce", {"address": addr, "subject": mail.get("subject", "")[:200]},
                                  actor="email")
@@ -521,28 +760,92 @@ class EmailWorker:
             return True
         return False
 
+    def _our_message_ids(self) -> Dict[str, str]:
+        rows = self.store._conn().execute(
+            "SELECT lead_id, json_extract(payload, '$.message_id') FROM lead_events WHERE type='message_out'"
+            " AND json_extract(payload, '$.channel')='email' AND json_extract(payload, '$.message_id') IS NOT NULL")
+        return {str(mid).strip("<> ").lower(): lead_id for lead_id, mid in rows if mid}
+
+    def lead_for_mail(self, mail: Dict[str, Any], ours: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
+        """Who is this from? Same address; else a reply in one of our threads; else the same company domain."""
+        lead = self.store.find_lead_by_contact(contact_key("email", mail.get("from", "")))
+        if lead:
+            return lead
+        ours = self._our_message_ids() if ours is None else ours
+        for mid in re.findall(r"<([^>]+)>", f"{mail.get('in_reply_to', '')} {mail.get('references', '')}"):
+            if mid.lower() in ours:
+                return self.store.get_lead(ours[mid.lower()])
+        domain = (mail.get("from", "").split("@")[-1] or "").lower()
+        if domain and domain not in FREEMAIL:
+            rows = self.store._conn().execute(
+                "SELECT DISTINCT l.id FROM leads l JOIN outreach o ON o.lead_id=l.id WHERE o.status='sent'"
+                " AND o.channel='email' AND lower(l.contact) LIKE ?", (f"%@{domain}",)).fetchall()
+            if len(rows) == 1:
+                return self.store.get_lead(rows[0][0])
+        return None
+
+    def _handled_key(self, mail: Dict[str, Any]) -> str:
+        import hashlib
+        ident = mail.get("message_id") or f"uid:{mail.get('uid')}:{mail.get('from')}"
+        return "email:handled:" + hashlib.sha1(ident.encode("utf-8", "replace")).hexdigest()[:20]
+
     def handle_replies(self) -> int:
         handled = 0
-        known = lambda addr: is_bounce_sender(addr) or \
-            self.store.find_lead_by_contact(contact_key("email", addr)) is not None  # noqa: E731
-        for mail in self.transport.fetch_unseen(wanted=known):
+        ours = self._our_message_ids()
+        recent = getattr(self.transport, "fetch_recent", None)
+        if recent:
+            wanted = lambda h: is_bounce_sender(h["from"]) or self.lead_for_mail(h, ours) is not None  # noqa: E731
+            mails = recent(days=int(get_secret("EMAIL_SCAN_DAYS", "3") or 3), wanted=wanted)
+        else:
+            mails = self.transport.fetch_unseen(wanted=lambda a: is_bounce_sender(a) or
+                                                self.lead_for_mail({"from": a}, ours) is not None)
+        first_scan = not self.store.kv_get("email:scan_v2")
+        for mail in mails:
+            key = self._handled_key(mail)
+            if self.store.kv_get(key):
+                continue
             if is_bounce_sender(mail["from"]):
                 if self.handle_bounce(mail):
-                    self.transport.mark_seen(mail["uid"])
+                    self.store.kv_set(key, "bounce")
+                    if not mail.get("seen"):
+                        self.transport.mark_seen(mail["uid"])
                     handled += 1
-                continue   # a bounce we can't match stays unread for you
-            lead = self.store.find_lead_by_contact(contact_key("email", mail["from"]))
+                continue   # a bounce we can't match stays as it is for you
+            lead = self.lead_for_mail(mail, ours)
             if not lead:
-                continue  # not someone we're talking to: leave it unread for you
+                continue  # not someone we're talking to: leave it for you
+            if first_scan and any(e["type"] == "message_in" for e in self.store.lead_events(lead["id"])):
+                self.store.kv_set(key, "before-v2")   # answered by the old unread-only reader
+                continue
+            if mail.get("auto"):
+                self.store.log_event(lead["id"], "auto_reply", {"subject": mail.get("subject", "")[:200]}, actor="email")
+                self.store.kv_set(key, "auto")
+                continue
             text = strip_quoted(mail["body"])[:4000]
             if not text:
-                self.transport.mark_seen(mail["uid"])
+                self.store.kv_set(key, "empty")
+                continue
+            if mail.get("seen") and getattr(self.transport, "answered_by_me", None) and \
+                    self.transport.answered_by_me(mail.get("message_id", "")):
+                self.store.log_event(lead["id"], "message_in", {"text": text[:2000], "channel": "email"}, actor="prospect")
+                if lead["state"] in ("SENT", "OPENED"):
+                    self.store.transition(lead["id"], "REPLIED", actor="email")
+                self.store.kv_set(key, "answered-by-hand")
+                self.alerts.notify(f"📩 {lead.get('company') or mail['from']} replied and you already answered "
+                                   f"by hand, so Autocrat stayed out of it.", "orange")
                 continue
             if lead["state"] == "DNC":
                 self.alerts.notify(f"🟠 DNC contact {lead.get('name') or mail['from']} emailed again; not auto-replying.")
-                self.transport.mark_seen(mail["uid"])
+                self.store.kv_set(key, "dnc")
                 continue
-            decision = self.closer.decide(self.transcript_for(lead["id"], text), lead_id=lead["id"], channel="email")
+            transcript = self.transcript_for(lead["id"], text)
+            decision = self.closer.decide(transcript, lead_id=lead["id"], channel="email")
+            if not decision.get("reply") and decision.get("intent") not in ("stop", "not_interested"):
+                # We contacted them; silence loses sales. Ask once more, insisting on an answer.
+                retry = self.closer.decide(transcript + "\n\n(Note: this is a prospect we emailed. Write a reply.)",
+                                           lead_id=lead["id"], channel="email")
+                if retry.get("reply"):
+                    decision = retry
             # logs message_in, REPLIED/DNC; the alert below replaces the closer's own (one message per reply)
             self.closer.apply_outcome(lead, text, decision, alert=False)
             reply = decision["reply"]
@@ -553,18 +856,26 @@ class EmailWorker:
             elif reply and not RuntimeControl().killed:
                 body = f"{reply}\n\n{self.signature}"
                 self.sleep(min(120.0, 20 + len(text) / 10))   # don't reply in 2 seconds
-                msg_id = self.transport.send(mail["from"], subject, body, in_reply_to=mail["message_id"],
-                                             references=mail["references"])
-                self.store.log_event(lead["id"], "message_out", {"text": reply, "subject": subject,
-                                                                 "message_id": msg_id, "channel": "email",
-                                                                 "intent": decision["intent"]}, actor="closer")
-                outcome = f"auto-replied:\n{reply}"
+                try:
+                    ics = self.invite_for(lead, decision, mail["from"])
+                    msg_id = self.transport.send(mail["from"], subject, body, in_reply_to=mail["message_id"],
+                                                 references=mail["references"], **({"ics": ics} if ics else {}))
+                    self.store.log_event(lead["id"], "message_out", {"text": reply, "subject": subject,
+                                                                     "message_id": msg_id, "channel": "email",
+                                                                     "intent": decision["intent"]}, actor="closer")
+                    outcome = f"auto-replied:\n{reply}"
+                except Exception as e:
+                    outcome = f"reply FAILED ({e}); answer them yourself:\n{reply}"
             elif decision["intent"] in ("stop", "not_interested"):
                 outcome = "marked do-not-contact"
             else:
                 outcome = "no auto-reply: your move"
+            log.info(f"📩 reply from {mail['from']} ({decision.get('intent')}): {outcome.splitlines()[0][:120]}")
             self.alerts.notify(reply_alert(lead, mail["from"], text, decision, outcome),
                                "red" if decision.get("hot") else "orange")
-            self.transport.mark_seen(mail["uid"])
+            self.store.kv_set(key, "replied")
+            if not mail.get("seen"):
+                self.transport.mark_seen(mail["uid"])
             handled += 1
+        self.store.kv_set("email:scan_v2", "1")
         return handled

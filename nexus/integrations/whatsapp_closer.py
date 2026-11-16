@@ -154,8 +154,11 @@ def build_system_prompt(voice: str, offers: Dict[str, Any], name: str = "Yash", 
                         context: str = "", channel: str = "WhatsApp") -> str:
     booking_link = offers.get("booking_link") or ""
     booking = (f"share this link: {booking_link}" if booking_link else
-               "there is no booking link. Ask what day and time works for them; we're new and flexible, "
-               "so offer to fit around them, then confirm the time back in their words and timezone")
+               "offer exactly TWO of the open times listed with the conversation, written in their timezone "
+               "(e.g. 'does tue 10:30am or wed 4pm your time work?'). When they clearly agree to one, put that "
+               "time's ISO value in \"meeting\" and confirm it in their time plus the meeting link given with the "
+               "conversation. If none fit, ask what suits them and offer the next ones. Move to a call fast: "
+               "as soon as they show real interest, propose the call")
     pay_usd = offers.get("deposit_link_usd") or ""
     pay_inr = offers.get("deposit_link_inr") or ""
     prompt = f"""You are replying on {channel} on behalf of Yash, co-founder of a two-person studio that ships
@@ -198,9 +201,14 @@ Return ONLY a JSON object:
 {{"reply": "<message to send, or empty string to stay silent>",
   "intent": one of {list(INTENTS)},
   "hot": true|false,
-  "summary": "<one line for Yash about where this lead stands>"}}
+  "summary": "<one line for Yash about where this lead stands>",
+  "meeting": "<ISO time from the open times, ONLY once they confirmed it, else empty string>"}}
 
-If the message clearly isn't about work (a friend, a delivery, a wrong number), return an empty reply.
+Everyone here is a prospect we contacted first: ALWAYS reply (sales is the goal) unless they said stop
+or not interested. If it's a canned support or ticket answer (a help desk, "check our docs/terms"), thank
+them in one line, say it isn't a support question, and ask who looks after product or engineering (or the
+founder's email) so you reach someone who can buy. Return an empty reply only for messages that are
+clearly not from a prospect at all (a friend, a delivery, a wrong number).
 
 Sales playbook (follow it like a professional closer would):
 {playbook or '(no playbook file: use CLOSER above)'}
@@ -220,6 +228,17 @@ def format_transcript(messages: List[Dict[str, Any]], contact: str) -> str:
         who = (contact or "Them") if m.get("incoming") else "Me"
         lines.append(f"{who}: {m.get('text', '')}")
     return "\n".join(lines)
+
+
+def booking_offset(lead: Optional[Dict[str, Any]]) -> int:
+    """The prospect's UTC offset in minutes, from their market (falls back to EMAIL_UTC_OFFSET_MINUTES)."""
+    from nexus.integrations.email_channel import market_offset
+    default = int(get_secret("EMAIL_UTC_OFFSET_MINUTES", "240") or 240)
+    return market_offset((lead or {}).get("market") or "", default)
+
+
+def _iso(t) -> str:
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ") if t else ""
 
 
 class WhatsAppCloser:
@@ -300,7 +319,16 @@ class WhatsAppCloser:
         events = self.store.lead_events(lead_id) if lead_id else None
         system = build_system_prompt(self.voice, self.offers, self.persona, playbook=self.playbook,
                                      context=lead_context(lead, events), channel=channel)
-        prompt = f"Conversation so far (latest last):\n{transcript}\n\nWrite Yash's next WhatsApp reply."
+        # Live booking info goes in the message, not the system prompt, so the big system prompt stays cacheable.
+        from nexus.integrations import booking
+        their_offset = booking_offset(lead)
+        busy = [m["start"] for m in booking.booked_meetings(self.store)]
+        slots = booking.open_slots(their_offset, busy=busy) if not self.offers.get("booking_link") else []
+        link = booking.meeting_link(lead_id or "")
+        call_info = (f"\n\nOpen times for a call (their time = ISO): {booking.slots_text(slots, their_offset)}\n"
+                     f"Meeting link: {link}") if slots else ""
+        prompt = (f"Conversation so far (latest last):\n{transcript}{call_info}\n\n"
+                  f"Write {self.persona}'s next {channel} reply.")
         result = self.router.complete(prompt, task="closer", system=system, json_mode=True,
                                       max_tokens=600, lead_id=lead_id)
         data = result.data if isinstance(result.data, dict) else {}
@@ -311,6 +339,9 @@ class WhatsAppCloser:
             "hot": bool(data.get("hot")) or intent in HOT_INTENTS,
             "summary": str(data.get("summary") or "")[:300],
             "channel": channel,
+            "meeting": _iso(booking.parse_meeting(str(data.get("meeting") or ""), slots)),
+            "meeting_link": link,
+            "their_offset": their_offset,
         }
 
     def apply_outcome(self, lead: Dict[str, Any], incoming: str, decision: Dict[str, Any], alert: bool = True) -> None:
@@ -318,6 +349,11 @@ class WhatsAppCloser:
         lead_id = lead["id"]
         self.store.log_event(lead_id, "message_in", {"text": incoming[:2000], "intent": decision.get("intent"),
                                                      "hot": bool(decision.get("hot"))}, actor="prospect")
+        if decision.get("meeting"):
+            self.store.log_event(lead_id, "meeting_booked", {"start": decision["meeting"],
+                                                             "link": decision.get("meeting_link", ""),
+                                                             "their_offset": decision.get("their_offset", 0),
+                                                             "channel": decision.get("channel", "")}, actor="closer")
         state = LeadState(lead["state"])
         if state in ENGAGEMENT_RANK and ENGAGEMENT_RANK[state] < ENGAGEMENT_RANK[LeadState.REPLIED]:
             self.store.transition(lead_id, "REPLIED", actor="closer")

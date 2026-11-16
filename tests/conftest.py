@@ -10,6 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Test runs must never write into the live engine's log (it made real problems hard to read).
+import tempfile  # noqa: E402
+os.environ.setdefault("AUTOCRAT_LOG_DIR", tempfile.mkdtemp(prefix="autocrat-test-logs-"))
+
 TEST_TOKEN = "test-token-0123456789abcdefghijklmnopqrstuv"
 
 

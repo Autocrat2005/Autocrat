@@ -251,7 +251,7 @@ class TelegramBot:
             app.add_handler(CommandHandler("wa", self._cmd_wa))
             # Forward any message (Discord copy, Reddit link, group chat) to the bot = capture it as a lead
             app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND, self._handle_forward))
-            app.add_handler(CallbackQueryHandler(self._handle_callback, pattern=r"^(approve|reject|oa|os|dnc):"))
+            app.add_handler(CallbackQueryHandler(self._handle_callback, pattern=r"^(approve|reject|oa|os|ws|dnc):"))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
             log.info("📱 Telegram bot polling started")
             await app.initialize()
@@ -323,13 +323,16 @@ class TelegramBot:
         if not await self._is_authorized(update):
             return
         text = (update.message.text or "").split(None, 1)[1] if len((update.message.text or "").split(None, 1)) > 1 else ""
+        if not text.strip() and not update.message.reply_to_message:
+            await self._send_ready_whatsapp(update)      # plain /wa: the drafts Autocrat already wrote
+            return
         replied = update.message.reply_to_message
         if replied and (replied.text or replied.caption):
             text = (text + "\n" + (replied.text or replied.caption)).strip()
         from nexus.core.lead_state import contact_key
         from nexus.core.secrets import get_secret
         from nexus.integrations.wa_links import build
-        store = getattr(self.engine, "store", None)
+        store = self.store
         blocked = (lambda n: store.is_suppressed(contact_key("whatsapp", "+" + n))) if store else None
         out = build(text, get_secret("WA_LINKS_DEFAULT_CC", "971") or "971", blocked)
         if not out["links"]:
@@ -348,6 +351,59 @@ class TelegramBot:
                     for i, l in enumerate(out["links"][start:start + 40])]
             await update.message.reply_text(head if start == 0 else f"📲 continued ({start + 1}+)",
                                             reply_markup=self._keyboard(rows))
+
+    def ready_whatsapp(self, limit: int = 40) -> List[Dict[str, Any]]:
+        """Staged/approved WhatsApp drafts with a phone, oldest first, as wa.me links."""
+        from urllib.parse import quote
+        from nexus.integrations.email_channel import split_subject
+        from nexus.integrations.wa_links import normalize
+        store = self.store
+        if store is None:
+            return []
+        out = []
+        for status in ("approved", "staged"):
+            for o in store.list_outreach(status, channel="whatsapp", limit=200):
+                lead = store.get_lead(o["lead_id"]) or {}
+                number = normalize(lead.get("contact") or "")
+                if not number:
+                    continue
+                _, body = split_subject(o["draft"])
+                out.append({"id": o["id"], "who": lead.get("company") or lead.get("name") or "+" + number,
+                            "name": lead.get("name") or "", "number": number, "created": o["created_at"],
+                            "from": (lead.get("data") or {}).get("send_from") or "",
+                            "url": f"https://wa.me/{number}?text={quote(body)}"})
+        out.sort(key=lambda x: x["created"])
+        return out[:limit]
+
+    async def _send_ready_whatsapp(self, update) -> None:
+        ready = await asyncio.get_running_loop().run_in_executor(None, self.ready_whatsapp)
+        if not ready:
+            await update.message.reply_text("No WhatsApp drafts waiting. New ones arrive with each broker session "
+                                            "(Dubai 10:00-19:00).")
+            return
+        await update.message.reply_text(f"📲 {len(ready)} WhatsApp message(s) ready. Tap a name: WhatsApp opens with "
+                                         "the message written. Send it, then tap ✔ so it's never sent twice.")
+        for start in range(0, len(ready), 20):
+            rows = [[{"text": f"{start + i + 1}. {r['who'][:26]}", "url": r["url"]},
+                     {"text": "✔ Sent", "callback_data": f"ws:{r['id']}"}]
+                    for i, r in enumerate(ready[start:start + 20])]
+            await update.message.reply_text(f"Batch {start // 20 + 1}", reply_markup=self._keyboard(rows))
+
+    def mark_whatsapp_sent(self, outreach_id: str, actor: str) -> str:
+        """You sent it by hand: approve (if needed) and mark sent in one step."""
+        store = self.store
+        out = store.get_outreach(outreach_id)
+        if not out:
+            return "Unknown draft."
+        if out["status"] == "sent":
+            return "Already marked sent."
+        if out["status"] == "staged":
+            store.approve_outreach(outreach_id, actor=actor)
+        lead = store.get_lead(out["lead_id"])
+        if lead and lead["state"] == "STAGED":
+            store.transition(lead["id"], "APPROVED", actor=actor)
+        store.mark_outreach_sent(outreach_id, actor=actor)
+        return f"✔ Sent to {(lead or {}).get('company') or (lead or {}).get('name') or 'them'}."
 
     async def _cmd_id(self, update, context):
         """Show IDs for setup. Works for anyone; IDs aren't secrets and grant nothing."""
@@ -469,6 +525,15 @@ class TelegramBot:
                                           parse_mode="HTML")
             return
 
+        if kind == "ws":
+            self._audit(actor, "whatsapp_sent_by_hand", {"outreach_id": ident})
+            try:
+                note = await asyncio.get_running_loop().run_in_executor(None, self.mark_whatsapp_sent, ident, actor)
+            except Exception as e:
+                note = f"Couldn't mark it: {e}"
+            await query.message.reply_text(note)
+            return
+
         if kind == "oa":
             self._audit(actor, "outreach_approve", {"outreach_id": ident})
             result = await self._run_in_thread(f"approve outreach {ident}", actor)
@@ -477,8 +542,7 @@ class TelegramBot:
                 return
             links = result.get("links") or {}
             await query.edit_message_text(
-                f"{original}\n\n✅ Approved by {html.escape(actor)}"
-                + (f"\nDesk: <a href=\"{html.escape(links['desk'])}\">open WhatsApp Web</a>" if links.get("desk") else ""),
+                f"{original}\n\n✅ Approved by {html.escape(actor)}",
                 parse_mode="HTML", disable_web_page_preview=True,
                 reply_markup=self._keyboard(approved_buttons(ident, links)))
             return

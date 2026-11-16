@@ -97,10 +97,20 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
         send_from = ((lead or {}).get("data") or {}).get("send_from")
         if send_from:
             where += f"\nSend from: <b>{html.escape(str(send_from))}</b>"
-        rows = [[
-            {"text": "✅ Approve", "callback_data": f"oa:{outreach['id']}"},
-            {"text": "🚫 DNC", "callback_data": f"dnc:{lead_id}"},
-        ]]
+        if outreach["channel"] == "whatsapp" and lead:
+            # You send WhatsApp by hand from your phone: open the app with the message written (wa.me),
+            # then tap ✔ so it's never sent twice. No approve step.
+            from nexus.core.deeplinks import wa_me_url
+            from nexus.integrations.email_channel import split_subject
+            rows = [[{"text": "📲 Open in WhatsApp", "url": wa_me_url(lead.get("contact") or "",
+                                                                     split_subject(outreach["draft"])[1])},
+                     {"text": "✔ Sent", "callback_data": f"ws:{outreach['id']}"}],
+                    [{"text": "🚫 DNC", "callback_data": f"dnc:{lead_id}"}]]
+        else:
+            rows = [[
+                {"text": "✅ Approve", "callback_data": f"oa:{outreach['id']}"},
+                {"text": "🚫 DNC", "callback_data": f"dnc:{lead_id}"},
+            ]]
         url = (lead or {}).get("url") or ""
         if url.startswith(("http://", "https://")):
             rows.append([{"text": "🔗 Open post", "url": url}])
