@@ -96,6 +96,28 @@ def humanize(text: str) -> str:
     return text.strip().strip('"').strip()
 
 
+SIGNOFF_WORDS = r"(?:cheers|thanks|thank you|best|regards|best regards|talk soon|speak soon|ttyl)"
+
+
+def strip_signoff(text: str, names=("yash",)) -> str:
+    """The email signature is added separately: drop a sign-off the AI wrote itself ("yash", "cheers, yash")."""
+    lines = (text or "").rstrip().split("\n")
+    who = "|".join(re.escape(n.strip().lower()) for n in names if n and n.strip())
+    if not who:
+        return (text or "").strip()
+    name_line = re.compile(rf"^\W*(?:{SIGNOFF_WORDS}\W*)?(?:{who})(?:\s+\w+)?\W*$", re.I)
+    bare = re.compile(rf"^\W*{SIGNOFF_WORDS}\W*$", re.I)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if len(lines) > 1 and name_line.match(lines[-1].strip()):
+        lines.pop()
+        while lines and not lines[-1].strip():
+            lines.pop()
+        if len(lines) > 1 and bare.match(lines[-1].strip()):   # "thanks," on the line above the name
+            lines.pop()
+    return "\n".join(lines).strip()
+
+
 def phone_from_title(title: str) -> str:
     digits = re.sub(r"\D", "", title or "")
     return f"+{digits}" if 8 <= len(digits) <= 15 and re.fullmatch(r"[+\d\s()-]+", title.strip()) else ""
@@ -157,7 +179,9 @@ def lead_context(lead: Optional[Dict[str, Any]], events: Optional[List[Dict[str,
         sent = sum(1 for e in events if e.get("type") == "message_out")
         received = sum(1 for e in events if e.get("type") == "message_in")
         parts.append(f"messages so far: {received} from them, {sent} from us")
-    findings = [str(f) for f in ((data.get("site_check") or {}).get("findings") or [])][:3]
+    from nexus.integrations.site_audit import relevant_line
+    findings = [str(f) for f in ((data.get("site_check") or {}).get("findings") or [])
+                if relevant_line(str(f), lead.get("niche") or "")][:3]
     if findings:
         parts.append("things we noticed on their website (send these, as a short list, when they ask to see "
                      "them or say yes to our offer to share them): " + " | ".join(findings))
@@ -222,6 +246,24 @@ Sales framework: CLOSER. Work out which step the conversation is at and do only 
 - R, Reinforce the decision: once they say yes, congratulate briefly, confirm next steps and the call time,
   and keep momentum. Don't re-sell after they've agreed.
 Never skip ahead to price in the first message unless they asked. One question per message.
+
+Sell what fits THIS person (their segment is in "What we know about them"):
+- Software founders, SaaS, apps, games, AI-built products (segment vibe_coder, mvp, or a product launch): talk
+  about the product itself: shipping the next feature they don't have time for, payments and payouts, auth,
+  scaling, reliability, the MVP. NEVER pitch WhatsApp, live chat, "enquiries at 2am" or lead response to them.
+- Agencies, brokers, insurance, clinics, setup consultants (real_estate, insurance, business_setup): enquiries
+  answered instantly, follow-ups, booking, client portals.
+- Small teams with manual work (automation): the one recurring task worth automating first.
+
+Momentum (a reply that only asks another question is a wasted reply):
+- If they answered your question and showed no problem, do NOT dig for a new problem from an unrelated angle.
+  Say in a few words what was good about their answer (specific, peer to peer, no flattery), then give ONE
+  concrete, relevant idea for their product or the likely next hard thing at their stage, say in one line what
+  we do, and offer an easy next step: two call times, or "want me to send 3 quick ideas for X?".
+- By our second message in a thread there must be a concrete next step on the table (a call, a demo, a small
+  scoped offer). Discovery questions: two at most in the whole thread.
+- If they clearly need nothing, close warmly in one or two lines and leave the door open. No pushing.
+- Never sign off with a name: the signature is added automatically.
 
 Offers (quote these freely when they ask or when you reach E):
 - Rapid workflow automation: from $1,250, usually delivered in about 7 days
@@ -472,7 +514,7 @@ class WhatsAppCloser:
         prompt = (f"What we know about them:\n{lead_context(lead, events)}\n\n"
                   f"Conversation so far (latest last):\n{transcript}{call_info}\n\n"
                   f"Write {self.persona}'s next {channel} reply.")
-        data = self._ask(prompt, system, "closer", lead_id, 700)
+        data = self._ask(prompt, system, "closer", lead_id, 1100)
         intent = data.get("intent") if data.get("intent") in INTENTS else "other"
         model = "standard"
         if (bool(data.get("hot")) or intent in HOT_INTENTS or intent == "objection") and data.get("reply") \
@@ -487,7 +529,7 @@ class WhatsAppCloser:
             except Exception as e:
                 log.info(f"hot-reply model unavailable, keeping the standard answer: {e}")
 
-        reply = humanize(str(data.get("reply") or ""))
+        reply = strip_signoff(humanize(str(data.get("reply") or "")), (self.persona, "yash", "parth"))
         held: List[str] = []
         hosts = self._allowed_hosts(lead, link)
         problems = closer_lint(reply, hosts) if reply else []
@@ -496,8 +538,8 @@ class WhatsAppCloser:
             try:
                 fix = self._ask(f"{prompt}\n\nYour draft was:\n{reply}\n\nIt breaks these rules: "
                                 f"{'; '.join(problems)}. Rewrite it so it breaks none of them.",
-                                system, "closer", lead_id, 700)
-                reply = humanize(str(fix.get("reply") or ""))
+                                system, "closer", lead_id, 1100)
+                reply = strip_signoff(humanize(str(fix.get("reply") or "")), (self.persona, "yash", "parth"))
             except Exception as e:
                 log.info(f"closer rewrite failed: {e}")
                 reply = ""

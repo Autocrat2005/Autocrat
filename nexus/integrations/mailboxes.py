@@ -25,6 +25,34 @@ from nexus.core.secrets import get_secret
 
 log = get_logger("mailboxes")
 
+# The provider stopped this account sending ("unusual activity", rate limits). Retrying makes it worse.
+BLOCK_MARKERS = ("5.4.6", "unusual sending activity", "unblockme", "5.7.1 ", "rate limit", "too many",
+                 "sending limit", "temporarily blocked", "account is blocked", "suspended")
+
+
+class MailboxBlocked(RuntimeError):
+    def __init__(self, reason: str, address: str):
+        super().__init__(f"{address}: {reason}")
+        self.address, self.reason = address, reason
+
+
+def is_block_error(e: Exception) -> bool:
+    text = str(e).lower()
+    return isinstance(e, MailboxBlocked) or any(m in text for m in BLOCK_MARKERS)
+
+
+def is_paused(store, address: str) -> bool:
+    until = float(store.kv_get(f"mailbox:paused:{(address or '').lower()}") or 0)
+    return until > time.time()
+
+
+def pause(store, address: str, hours: float) -> bool:
+    """Stop sending from this inbox for a while. Returns True the first time (so you're alerted once)."""
+    key = f"mailbox:paused:{(address or '').lower()}"
+    first = not is_paused(store, address)
+    store.kv_set(key, str(time.time() + hours * 3600))
+    return first
+
 
 class MailboxPool:
     def __init__(self, store, boxes: List[Any]):
@@ -72,16 +100,25 @@ class MailboxPool:
         return min(int(get_secret("EMAIL_CAP_MAX", "60") or 60), start + step * days)
 
     def extra_capacity(self) -> int:
-        return sum(self.cap_for(b) for b in self.boxes[1:] if getattr(b, "readable", False))
+        return sum(self.cap_for(b) for b in self.boxes[1:] if getattr(b, "readable", False) and not self.paused(b))
 
     def status(self) -> List[Dict[str, Any]]:
         return [{"address": b.address, "name": b.from_name, "cap": self.cap_for(b), "sent": self.sent_today(b)}
                 for b in self.boxes]
 
+    def paused(self, box) -> bool:
+        return is_paused(self.store, box.address)
+
+    def all_paused(self) -> bool:
+        return all(self.paused(b) for b in self.boxes)
+
     def pick(self):
         """The inbox with the most room left today, for a brand-new thread."""
         # An extra inbox only starts threads once we've managed to read it: replies we can't see are lost sales.
-        usable = [(i, b) for i, b in enumerate(self.boxes) if b is self.primary or getattr(b, "readable", False)]
+        usable = [(i, b) for i, b in enumerate(self.boxes) if not self.paused(b)
+                  and (b is self.primary or getattr(b, "readable", False))]
+        if not usable:
+            raise MailboxBlocked("every inbox is paused by the provider", self.primary.address)
         room = [(self.cap_for(b) - self.sent_today(b), -i, b) for i, b in usable]
         best = max(room, key=lambda r: (r[0], r[1]))
         return best[2] if best[0] > 0 else self.primary
@@ -118,8 +155,15 @@ class MailboxPool:
         if box is None:
             box = self.pick() if not in_reply_to else self.primary
         kwargs = {"ics": ics} if ics else {}
-        message_id = box.send(to, subject, self.personalise(body, box), in_reply_to=in_reply_to,
-                              references=references, **kwargs)
+        if self.paused(box):
+            raise MailboxBlocked("this inbox is paused by the provider", box.address)
+        try:
+            message_id = box.send(to, subject, self.personalise(body, box), in_reply_to=in_reply_to,
+                                  references=references, **kwargs)
+        except Exception as e:
+            if is_block_error(e):
+                raise MailboxBlocked(str(e), box.address) from e
+            raise
         self._remember(message_id, box)
         key = f"email:sent:{box.address.lower()}:{self.day}"
         self.store.kv_set(key, str(int(self.store.kv_get(key) or 0) + 1))

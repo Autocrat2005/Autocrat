@@ -329,3 +329,81 @@ def test_cold_lists_leave_room_for_leads_with_a_live_signal(store, monkeypatch):
     sent_to = [m["to"] for m in t.sent]
     # list mail stops once the day's total reaches half the limit; the lead with a signal always gets through
     assert "founder@y.example" in sent_to and 1 <= sum(a.startswith("b") for a in sent_to) <= 2
+
+
+def test_signoffs_are_stripped_and_enquiry_findings_stay_with_enquiry_businesses():
+    from nexus.integrations import site_audit
+    from nexus.integrations.whatsapp_closer import strip_signoff
+    nl = chr(10)
+    assert strip_signoff("sounds solid." + nl + nl + "yash") == "sounds solid."
+    assert strip_signoff("ok, tue 4pm works?" + nl + "cheers, Yash") == "ok, tue 4pm works?"
+    assert strip_signoff("thanks!" + nl + "Yash Shukla") == "thanks!"
+    assert strip_signoff("yash here, quick one: does tue work?") == "yash here, quick one: does tue work?"
+    result = {"findings": [{"key": "no_instant_contact", "severity": 3, "line": "no whatsapp button or live chat, so x"},
+                           {"key": "heavy_js", "severity": 4, "line": "about 2 MB of javascript"}]}
+    assert site_audit.top_findings(result, "vibe_coder") == ["about 2 MB of javascript"]
+    assert site_audit.top_findings(result, "real_estate")[0].startswith("no whatsapp")
+    assert not site_audit.relevant_line("no whatsapp button or live chat, so x", "mvp")
+    assert site_audit.relevant_line("no whatsapp button or live chat, so x", "insurance")
+
+
+def test_one_email_at_a_time_and_a_blocked_inbox_pauses_once(store, monkeypatch):
+    live()
+    from nexus.integrations import mailboxes
+    monkeypatch.setenv("EMAIL_MIN_GAP_SECONDS", "300")
+    monkeypatch.setenv("EMAIL_MAX_PER_TICK", "1")
+    t = RecentTransport()
+    w = worker(store, t)
+    for i in range(3):
+        lead, _ = store.upsert_lead(source="list", dedupe_key=f"pace{i}", channel="email", contact=f"p{i}@x.example",
+                                    market="UAE")
+        store.stage_outreach(lead["id"], "email", "subject: hi" + chr(10) + "hey there")
+    assert w.send_openers(IN_HOURS) == 1 and w.send_openers(IN_HOURS) == 0       # paced: next one minutes later
+    store.kv_set("email:next_send_at", "0")
+
+    def blocked(*a, **k):
+        raise Exception("(550, b'5.4.6 Unusual sending activity detected. To unblock https://mail.zoho.in/UnblockMe')")
+    t.send = blocked
+    assert w.send_openers(IN_HOURS) == 0
+    assert mailboxes.is_paused(store, "yash@causalith.com") and w.sending_paused()
+    alerts = [text for pr, text in w.alerts.items if pr == "red"]
+    assert len(alerts) == 1 and "UnblockMe" in alerts[0]
+    store.kv_set("email:next_send_at", "0")
+    assert w.send_openers(IN_HOURS) == 0 and len([1 for pr, _ in w.alerts.items if pr == "red"]) == 1   # no retry storm
+
+
+def test_postal_address_only_on_us_and_canada_mail(store):
+    live()
+    t = RecentTransport()
+    w = worker(store, t)
+    w.postal = "Somewhere 1, Test City"
+    for key, market in (("pu", "US"), ("pd", "UAE"), ("pi", "India"), ("pc", "Canada")):
+        lead, _ = store.upsert_lead(source="x", dedupe_key=key, channel="email", contact=f"{key}@x.example", market=market)
+        store.stage_outreach(lead["id"], "email", "subject: hi" + chr(10) + "hey")
+    w.hours = ""                     # any hour, so every market is in its window for this test
+    w.send_openers(IN_HOURS)
+    by_to = {m["to"]: m["body"] for m in t.sent}
+    assert "Test City" in by_to["pu@x.example"] and "Test City" in by_to["pc@x.example"]
+    assert "Test City" not in by_to["pd@x.example"] and "Test City" not in by_to["pi@x.example"]
+
+
+def test_pool_pauses_only_the_blocked_inbox(store):
+    from nexus.integrations.mailboxes import MailboxBlocked, MailboxPool
+    a, b = Box("yash@studio.example", "Yash"), Box("parth@studio.example", "Parth")
+    b.readable = True
+    pool = MailboxPool(store, [a, b])
+    pool.primary_cap = 1             # the new inbox has more room, so it's picked first
+
+    def blocked(*args, **kw):
+        raise Exception("550 5.4.6 Unusual sending activity detected")
+    b.send = blocked
+    try:
+        pool.send("x@lead.example", "hi", "hey")      # the new inbox has the most room, and it's blocked
+        assert False
+    except MailboxBlocked as e:
+        blocked_address = e.address
+    assert blocked_address == "parth@studio.example"
+    from nexus.integrations.mailboxes import pause
+    pause(store, blocked_address, 24)
+    pool.send("y@lead.example", "hi", "hey")
+    assert len(a.sent) == 1 and pool.extra_capacity() == 0 and not pool.all_paused()

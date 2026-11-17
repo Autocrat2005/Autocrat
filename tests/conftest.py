@@ -41,6 +41,8 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("AUTOCRAT_AUTH_TOKEN", TEST_TOKEN)
     monkeypatch.setenv("RUN_MODE", "dry_run")
     monkeypatch.setenv("MX_CHECK", "0")   # no DNS lookups in tests
+    monkeypatch.setenv("EMAIL_MIN_GAP_SECONDS", "0")   # tests send in bursts; live mail is paced
+    monkeypatch.setenv("EMAIL_MAX_PER_TICK", "1000")
     monkeypatch.setenv("AUTOCRAT_DB_PATH", str(tmp_path / "autocrat.db"))
     monkeypatch.setenv("AUTOCRAT_BRAIN", "0")
     monkeypatch.setenv("AUTOCRAT_PROFILE", "core")

@@ -628,6 +628,8 @@ class EmailWorker:
                     lead_id=lead_id, system=("Write a short follow-up from Yash in this email thread: they went quiet after "
                                              "our last message. 1-2 casual lowercase sentences in Yash's voice, pick up exactly "
                                              "where it stopped, make replying easy (a yes/no question or two concrete call times). "
+                                             "If they ignored a question, don't repeat it: offer one concrete idea for THEIR "
+                                             "product instead (software founders: never WhatsApp or live-chat angles). "
                                              + ("Last nudge: say you'll leave it here and the door is open. " if nudges else "")
                                              + "No dashes, no placeholders, never invent anything. Return ONLY JSON {\"draft\": \"...\"}\n\n"
                                              f"Yash's voice:\n{(getattr(self.closer, 'voice', '') or '')[:2000]}"))
@@ -709,7 +711,8 @@ class EmailWorker:
         """Follow-up 1 when we looked at their site: offer what we noticed. Free (no AI call), and a 'yes'
         hands the reply-writer the list to send."""
         check = (lead.get("data") or {}).get("site_check") or {}
-        findings = check.get("findings") or []
+        from nexus.integrations.site_audit import relevant_line
+        findings = [f for f in check.get("findings") or [] if relevant_line(str(f), lead.get("niche") or "")]
         if n != 1 or len(findings) < 2:
             return ""
         from nexus.integrations.site_audit import domain_of
@@ -862,7 +865,21 @@ class EmailWorker:
             self.store.kv_set(day_key, str(done + staged))
         return staged
 
+    def sending_paused(self) -> bool:
+        from nexus.integrations.mailboxes import is_paused
+        pool = self.transport if hasattr(self.transport, "all_paused") else None
+        return pool.all_paused() if pool else is_paused(self.store, getattr(self.transport, "address", "") or "")
+
     def send_openers(self, now: Optional[datetime] = None) -> int:
+        # Pace like a person: one email per cycle, several minutes apart. A burst of 18 in a few minutes is
+        # what made Zoho flag the account as "unusual sending activity".
+        if self.sending_paused():
+            return 0
+        now_ts = time.time()
+        if now_ts < float(self.store.kv_get("email:next_send_at") or 0):
+            return 0
+        per_tick = max(1, int(get_secret("EMAIL_MAX_PER_TICK", "1") or 1))
+        gap = float(get_secret("EMAIL_MIN_GAP_SECONDS", "300") or 0)
         local = self._local_now(now)
         day_key = f"email:sent:{local.strftime('%Y-%m-%d')}"
         sent_today = int(self.store.kv_get(day_key) or 0)
@@ -924,8 +941,8 @@ class EmailWorker:
             wa_line = self.whatsapp_line(lead)
             body = f"{body}\n\n{wa_line}" if wa_line else body
             body = f"{body}\n\n{self.signature}\n\n{self.optout}"
-            if self.postal:  # CAN-SPAM (US) wants a physical postal address on commercial email
-                body = f"{body}\n{self.postal}"
+            if self.postal and needs_postal(lead.get("market") or ""):
+                body = f"{body}\n{self.postal}"     # US (CAN-SPAM) and Canada (CASL) only
             if RuntimeControl().is_dry_run:
                 continue  # dry run: the Telegram alert already shows the draft; nothing is sent
             try:
@@ -936,11 +953,29 @@ class EmailWorker:
                 msg_id = self.transport.send(to, subject, body, in_reply_to=in_reply_to, references=references)
                 self.store.mark_outreach_sent(out["id"], actor="email")
             except Exception as e:
+                from nexus.integrations.mailboxes import is_block_error, pause
+                if is_block_error(e):
+                    address = getattr(e, "address", "") or getattr(self.transport, "address", "") or "the inbox"
+                    hours = float(get_secret("EMAIL_BLOCK_PAUSE_HOURS", "24") or 24)
+                    if pause(self.store, address, hours):
+                        log.warning(f"Email: {address} blocked by the provider, paused {hours:g}h: {str(e)[:160]}")
+                        self.alerts.notify(
+                            f"🛑 Zoho stopped {address} from sending (\"unusual sending activity\"). Autocrat paused "
+                            f"that inbox for {hours:g}h and is now sending more slowly. To unblock: sign in to Zoho Mail "
+                            f"as {address} and follow the unblock banner (mail.zoho.in/UnblockMe). Replies keep being read.",
+                            "red")
+                    if self.sending_paused():
+                        break
+                    continue
                 log.warning(f"Email opener to lead {lead['id']} failed: {e}")
                 continue
             self.store.log_event(lead["id"], "message_out", {"text": body, "subject": subject, "kind": out.get("kind"),
                                                              "message_id": msg_id, "channel": "email"}, actor="email")
             sent += 1
+            if gap:
+                self.store.kv_set("email:next_send_at", str(time.time() + gap * self.rng.uniform(0.8, 1.6)))
+            if sent >= per_tick:
+                break
         if sent:
             self.store.kv_set(day_key, str(sent_today + sent))
             self.alerts.notify(f"📧 Sent {sent} email(s) ({sent_today + sent}/{cap} today)", "orange")

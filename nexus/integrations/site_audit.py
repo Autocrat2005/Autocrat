@@ -181,9 +181,26 @@ def audit(url: str, fetch: Optional[Callable[[str, str], Resp]] = None, now: Opt
     return result
 
 
+# Findings that only matter to businesses that live on enquiries (agencies, brokers, clinics). For a software
+# product or a game, "no WhatsApp button" is noise, and leading with it makes us look like we didn't look.
+ENQUIRY_ONLY = {"no_instant_contact"}
+ENQUIRY_ICPS = {"real_estate", "insurance", "business_setup", ""}
+FINDING_MARKERS = {"no_instant_contact": "no whatsapp button or live chat"}
+
+
+def relevant(key: str, icp: str) -> bool:
+    return key not in ENQUIRY_ONLY or (icp or "") in ENQUIRY_ICPS
+
+
+def relevant_line(line: str, icp: str) -> bool:
+    """Same rule for findings saved as plain text on a lead."""
+    return all(relevant(key, icp) for key, marker in FINDING_MARKERS.items() if marker in (line or "").lower())
+
+
 def top_findings(result: Dict[str, Any], icp: str = "", n: int = 3) -> List[str]:
     boost = ICP_BOOST.get(icp or "", {})
-    ranked = sorted(result.get("findings") or [], key=lambda f: -(f["severity"] + boost.get(f["key"], 0)))
+    kept = [f for f in result.get("findings") or [] if relevant(f["key"], icp)]
+    ranked = sorted(kept, key=lambda f: -(f["severity"] + boost.get(f["key"], 0)))
     return [f["line"] for f in ranked[:n]]
 
 
