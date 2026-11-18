@@ -254,7 +254,7 @@ class TelegramBot:
             # Forward any message (Discord copy, Reddit link, group chat) to the bot = capture it as a lead
             app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND, self._handle_forward))
             app.add_handler(CallbackQueryHandler(self._handle_callback,
-                                                 pattern=r"^(approve|reject|oa|os|ws|dnc|pay|mo|cl|pt):"))
+                                                 pattern=r"^(approve|reject|oa|os|ws|dnc|pay|mo|cl|pt|rs|rx):"))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
             log.info("📱 Telegram bot polling started")
             await app.initialize()
@@ -406,6 +406,10 @@ class TelegramBot:
             return deals.apply_meeting_outcome(store, worker, lead_id, code, actor=actor)
         if kind == "cl":
             return {"note": calls.log_call(store, worker, lead_id, code, actor=actor)}
+        if kind in ("rs", "rx"):
+            if worker is None:
+                return {"note": "Email channel isn't running."}
+            return {"note": worker.send_reply_draft(lead_id, actor) if kind == "rs" else worker.skip_reply_draft(lead_id, actor)}
         return {"note": precall.send_teaser(store, worker, lead_id, actor=actor)}
 
     async def _cmd_calls(self, update, context):
@@ -581,7 +585,7 @@ class TelegramBot:
                                           parse_mode="HTML")
             return
 
-        if kind in ("pay", "mo", "cl", "pt"):
+        if kind in ("pay", "mo", "cl", "pt", "rs", "rx"):
             lead_id, _, code = ident.partition(":")
             self._audit(actor, f"button_{kind}", {"lead_id": lead_id, "code": code})
             try:

@@ -27,6 +27,30 @@ TYPOS = {"gmial.com", "gmai.com", "gamil.com", "gmail.co", "gmail.con", "gnail.c
          "outlook.con", "icloud.con", "gmail.cm", "gmail.om"}
 OK_TTL, BAD_TTL = 30 * 86400, 3 * 86400
 
+# Example addresses copied off sign-up forms and docs ("you@company.com", "jane@company.com"): they always bounce.
+PLACEHOLDER_LOCALS = {"you", "your", "yourname", "your.name", "name", "email", "youremail", "johndoe", "john.doe",
+                      "jane.doe", "janedoe", "jdoe", "user", "username", "test", "example", "someone", "firstname",
+                      "first.last", "firstname.lastname", "myname", "sample"}
+PLACEHOLDER_DOMAINS = {"company.com", "domain.com", "example.com", "example.org", "example.net", "yourdomain.com",
+                       "yourcompany.com", "website.com", "yoursite.com", "acme.com", "email.com", "test.com",
+                       "mysite.com", "sentry.io", "wixpress.com", "sentry.wixpress.com"}
+# Inboxes that answer with a canned ticket or don't exist on a young product: wrong people, frequent bounces.
+ROLE_LOCALS = ("support", "help", "helpdesk", "legal", "privacy", "security", "abuse", "noreply", "no-reply",
+               "donotreply", "billing", "careers", "jobs", "press", "dpo", "compliance")
+
+
+def is_unusable_address(address: str) -> str:
+    """Why this address must not get a cold email ('' = fine)."""
+    local, _, domain = (address or "").strip().lower().partition("@")
+    if not local or not domain:
+        return "not an address"
+    if domain in PLACEHOLDER_DOMAINS or local in PLACEHOLDER_LOCALS:
+        return "an example address from a form or docs"
+    if any(local == r or local.startswith(r + ".") or local.startswith(r + "-") or local.startswith(r + "_")
+           for r in ROLE_LOCALS):
+        return "a help-desk or legal inbox"
+    return ""
+
 
 def doh_lookup(domain: str, record: str) -> Optional[list]:
     """Answers for a record type, [] when there are none, None when the lookup failed."""

@@ -39,7 +39,7 @@ def worker(store, t, decision=None):
     return w
 
 
-def sent_lead(store, w, t, email="support@saas.example", key="v1"):
+def sent_lead(store, w, t, email="founder@saas.example", key="v1"):
     lead, _ = staged_email_lead(store, email=email, key=key)
     store.update_lead_fields(lead["id"], market="UAE")
     w.send_openers(IN_HOURS)
@@ -47,7 +47,7 @@ def sent_lead(store, w, t, email="support@saas.example", key="v1"):
 
 
 def mail(**kw):
-    base = {"uid": "1", "seen": False, "from": "support@saas.example", "subject": "Re: quick one", "message_id": "<r1@x>",
+    base = {"uid": "1", "seen": False, "from": "founder@saas.example", "subject": "Re: quick one", "message_id": "<r1@x>",
             "in_reply_to": "", "references": "", "body": "", "dsn": "", "auto": False}
     base.update(kw)
     return base
@@ -59,13 +59,13 @@ def test_html_only_and_already_read_reply_is_answered(store):
     w = worker(store, t)
     lead, _ = sent_lead(store, w, t)
     html = "<html><body><p>Hi there,</p><p>Thanks for reaching out. Check our security guidelines.</p></body></html>"
-    raw = (b"From: Support <support@saas.example>\r\nSubject: Reply from Support Team\r\nMessage-ID: <v@saas.example>\r\n"
+    raw = (b"From: Support <founder@saas.example>\r\nSubject: Reply from Support Team\r\nMessage-ID: <v@saas.example>\r\n"
            b"Content-Type: text/html; charset=utf-8\r\n\r\n" + html.encode())
     parsed = parse_mail(raw, "114", "(\\Seen)")
     assert parsed["seen"] and "security guidelines" in parsed["body"] and not parsed["auto"]
     t.inbox = [parsed]
     assert w.handle_replies() == 1
-    assert t.sent[-1]["to"] == "support@saas.example" and t.sent[-1]["in_reply_to"] == "<v@saas.example>"
+    assert t.sent[-1]["to"] == "founder@saas.example" and t.sent[-1]["in_reply_to"] == "<v@saas.example>"
     assert any(e["type"] == "message_in" and "security guidelines" in e["payload"]["text"]
                for e in store.lead_events(lead["id"]))
     assert w.handle_replies() == 0                    # tracked by Message-ID: never answered twice
@@ -156,7 +156,8 @@ def test_quiet_conversation_gets_one_nudge(store, monkeypatch):
     store.transition(lead["id"], "REPLIED")
     store.log_event(lead["id"], "message_out", {"text": "from $1,250. what's your volume?", "channel": "email"}, actor="closer")
     with store.transaction() as c:
-        c.execute("UPDATE lead_events SET ts = ts - 3*86400 WHERE lead_id=?", (lead["id"],))
+        # Relative to the test's own clock, not the machine's, so the test doesn't age.
+        c.execute("UPDATE lead_events SET ts = ? WHERE lead_id=?", (IN_HOURS.replace(day=17).timestamp() - 3 * 86400, lead["id"]))
 
     class R:
         def complete(self, *a, **k):
@@ -190,7 +191,7 @@ def test_folded_headers_are_flattened_before_sending(monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
     t = EmailTransport()
     t.address, t.password, t.smtp_port = "yash@causalith.com", "x", 465
-    t.send("support@saas.example", "Re: Reply from\r\n Support Team", "hi", in_reply_to="<a@b>\r\n",
+    t.send("founder@saas.example", "Re: Reply from\r\n Support Team", "hi", in_reply_to="<a@b>\r\n",
            references="<one@x>\r\n\t<two@y>")
     msg = captured["msg"]
     assert msg["References"] == "<one@x> <two@y> <a@b>" and msg["Subject"] == "Re: Reply from Support Team"

@@ -52,6 +52,10 @@ class PipelinePlugin(NexusPlugin):
                               "invoice <id> [amount] [currency]", side_effect="external",
                               patterns=[r"^invoice\s+(?P<lead_id>[0-9a-f]{12})(?:\s+\$?(?P<amount>[\d,]+(?:\.\d+)?))?"
                                         r"(?:\s+(?P<currency>[A-Za-z]{3}))?$"])
+        self.register_command("lead_manual", self.lead_manual,
+                              "You handle this lead yourself: Autocrat stops auto-replying (auto <id> hands it back)",
+                              "manual <id> | auto <id>", side_effect="internal",
+                              patterns=[r"^(?P<mode>manual|auto)\s+(?P<lead_id>[0-9a-f]{12})$"])
         self.register_command("lead_email", self.lead_email, "Save a lead's email (e.g. one you got on a call)",
                               "email <id> <address>", side_effect="internal",
                               patterns=[r"^email\s+(?P<lead_id>[0-9a-f]{12})\s+(?P<address>\S+@\S+)$"])
@@ -148,6 +152,18 @@ class PipelinePlugin(NexusPlugin):
         res = deals.request_payment(self.store, active_worker(), str(lead_id), amount=value,
                                     currency=(currency or "USD").upper(), actor=current_actor())
         return {"success": True, "result": res["note"]} if res.get("ok") else {"success": False, "error": res["note"]}
+
+    def lead_manual(self, lead_id: str = "", mode: str = "manual", **kwargs):
+        lead = self.store.get_lead(str(lead_id))
+        if not lead:
+            return {"success": False, "error": f"Unknown lead {lead_id}"}
+        data = {**(lead.get("data") or {}), "hands_off": mode == "manual"}
+        self.store.update_lead_fields(lead["id"], data=data)
+        self.store.audit(current_actor(), f"lead_{mode}", {"lead_id": lead["id"]})
+        who = lead.get("company") or lead.get("name") or lead["id"]
+        return {"success": True, "result": (f"✋ {who}: you're handling this one. Autocrat records their replies and "
+                                            f"alerts you, but won't answer." if mode == "manual" else
+                                            f"🤖 {who}: Autocrat answers their replies again.")}
 
     def lead_email(self, lead_id: str = "", address: str = "", **kwargs):
         from nexus.integrations import calls

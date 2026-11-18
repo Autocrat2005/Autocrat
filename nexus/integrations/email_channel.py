@@ -425,6 +425,8 @@ class EmailWorker:
         self.transport = transport
         self.sleep = sleep
         self.auto_send = env_bool("EMAIL_AUTO_SEND", False)
+        # Answers to people who replied: sent automatically, or drafted for your one-tap approval (0).
+        self.auto_reply = env_bool("EMAIL_AUTO_REPLY", True)
         self.daily_cap = int(get_secret("EMAIL_DAILY_CAP", "20") or 20)
         self.hours = get_secret("EMAIL_SEND_HOURS", "9-18")
         self.offset = int(get_secret("EMAIL_UTC_OFFSET_MINUTES", "240") or 240)
@@ -566,8 +568,8 @@ class EmailWorker:
     def nudge_quiet_conversations(self, now: Optional[datetime] = None) -> int:
         """They replied, we answered, then silence: one short nudge after EMAIL_NUDGE_HOURS (48),
         a second after another 72h, then stop. Business hours only, inside the daily cap."""
-        if RuntimeControl().is_dry_run or RuntimeControl().killed:
-            return 0
+        if RuntimeControl().is_dry_run or RuntimeControl().killed or not self.auto_reply:
+            return 0           # with auto-replies paused, live conversations are yours: no automatic nudges either
         now = now or datetime.now(timezone.utc)
         hours = float(get_secret("EMAIL_NUDGE_HOURS", "48") or 48)
         sent = 0
@@ -865,6 +867,39 @@ class EmailWorker:
             self.store.kv_set(day_key, str(done + staged))
         return staged
 
+    def send_reply_draft(self, lead_id: str, actor: str = "telegram") -> str:
+        """You approved the drafted answer: send it in the thread (once)."""
+        events = self.store.lead_events(lead_id)
+        drafts = [e for e in events if e["type"] == "reply_draft"]
+        if not drafts:
+            return "No drafted reply for this lead."
+        d, draft_id = drafts[-1].get("payload") or {}, drafts[-1]["id"]
+        if any(e["type"] == "message_out" and e["id"] > draft_id for e in events):
+            return "Something was already sent after this draft, so I didn't send it."
+        if any(e["type"] == "reply_draft_done" and (e.get("payload") or {}).get("draft") == draft_id for e in events):
+            return "This draft was already handled."
+        if RuntimeControl().killed or RuntimeControl().is_dry_run:
+            return "Kill switch or dry run is on: nothing sent."
+        lead = self.store.get_lead(lead_id) or {}
+        body = f"{d['text']}\n\n{self.sign(True)}"
+        ics = self.invite_for(lead, {"meeting": d.get("meeting"), "meeting_link": d.get("meeting_link")}, d["to"]) \
+            if d.get("meeting") else ""
+        try:
+            msg_id = self.transport.send(d["to"], d["subject"], body, in_reply_to=d.get("in_reply_to", ""),
+                                         references=d.get("references", ""), **({"ics": ics} if ics else {}))
+        except Exception as e:
+            return f"Sending failed ({e}). Here it is to send yourself:\n{d['text']}"
+        self.store.log_event(lead_id, "message_out", {"text": d["text"], "subject": d["subject"], "message_id": msg_id,
+                                                      "channel": "email", "intent": d.get("intent")}, actor=actor)
+        self.store.log_event(lead_id, "reply_draft_done", {"draft": draft_id, "sent": True}, actor=actor)
+        return f"📤 Sent to {d['to']}."
+
+    def skip_reply_draft(self, lead_id: str, actor: str = "telegram") -> str:
+        drafts = [e for e in self.store.lead_events(lead_id) if e["type"] == "reply_draft"]
+        if drafts:
+            self.store.log_event(lead_id, "reply_draft_done", {"draft": drafts[-1]["id"], "sent": False}, actor=actor)
+        return "✋ Okay, you're answering this one. The draft won't be sent."
+
     def sending_paused(self) -> bool:
         from nexus.integrations.mailboxes import is_paused
         pool = self.transport if hasattr(self.transport, "all_paused") else None
@@ -919,10 +954,13 @@ class EmailWorker:
             followup = (out.get("kind") or "").startswith("followup")
             in_reply_to = references = ""
             if not followup:
-                from nexus.integrations.mx_check import has_mail_server
-                if not has_mail_server(to, self.store):    # a dead domain would only bounce and hold the limit down
+                from nexus.integrations.mx_check import has_mail_server, is_unusable_address
+                why = is_unusable_address(to)
+                if not why and not has_mail_server(to, self.store):  # a dead domain would only bounce
+                    why = "domain can't receive email"
+                if why:
                     try:
-                        self.store.reject_outreach(out["id"], actor="email-auto", reason="domain can't receive email")
+                        self.store.reject_outreach(out["id"], actor="email-auto", reason=why)
                     except Exception:
                         pass
                     continue
@@ -1128,6 +1166,18 @@ class EmailWorker:
                 self.alerts.notify(f"🟠 DNC contact {lead.get('name') or mail['from']} emailed again; not auto-replying.")
                 self.store.kv_set(key, "dnc")
                 continue
+            if (lead.get("data") or {}).get("hands_off"):
+                # You're handling this one yourself: record it and tell you, never auto-answer.
+                self.store.log_event(lead["id"], "message_in", {"text": text[:2000], "channel": "email"}, actor="prospect")
+                if lead["state"] in ("SENT", "OPENED"):
+                    self.store.transition(lead["id"], "REPLIED", actor="email")
+                self.store.kv_set(key, "hands-off")
+                if not mail.get("seen"):
+                    self.transport.mark_seen(mail["uid"])
+                self.alerts.notify(f"📩 {who} replied. You're handling this one by hand, so Autocrat didn't answer:\n"
+                                   f"“{' '.join(text.split())[:600]}”\n(to hand it back: auto {lead['id']})", "red")
+                handled += 1
+                continue
             transcript = self.transcript_for(lead["id"], text)
             decision = self.closer.decide(transcript, lead_id=lead["id"], channel="email")
             if not decision.get("reply") and not decision.get("held") \
@@ -1142,8 +1192,18 @@ class EmailWorker:
             reply = decision["reply"]
             subject = mail["subject"] if mail["subject"].lower().startswith("re:") else f"Re: {mail['subject']}"
             outcome = ""
+            draft_buttons = None
             if reply and RuntimeControl().is_dry_run:
                 outcome = f"[dry run] would answer:\n{reply}"
+            elif reply and not self.auto_reply:
+                # Auto-replies paused: you approve every answer. One tap sends the draft in the thread.
+                self.store.log_event(lead["id"], "reply_draft", {
+                    "text": reply, "to": mail["from"], "subject": subject, "in_reply_to": mail["message_id"],
+                    "references": mail["references"], "meeting": decision.get("meeting", ""),
+                    "meeting_link": decision.get("meeting_link", ""), "intent": decision.get("intent")}, actor="closer")
+                outcome = f"DRAFT, not sent (auto-replies are paused):\n{reply}"
+                draft_buttons = [[{"text": "📤 Send this reply", "callback_data": f"rs:{lead['id']}"},
+                                  {"text": "✋ I'll answer myself", "callback_data": f"rx:{lead['id']}"}]]
             elif reply and not RuntimeControl().killed:
                 body = f"{reply}\n\n{self.sign(True)}"
                 self.sleep(min(120.0, 20 + len(text) / 10))   # don't reply in 2 seconds
@@ -1173,10 +1233,10 @@ class EmailWorker:
                     (fresh.get("data") or {}).get("reply_to") != sender:
                 # A colleague answered: they're the one talking to us now (invoices and follow-ups go to them).
                 fresh = self.store.update_lead_fields(lead["id"], data={**(fresh.get("data") or {}), "reply_to": sender})
-            buttons = None
+            buttons = draft_buttons
             if decision.get("intent") == "ready_to_pay":
                 from nexus.integrations.deals import money_buttons
-                buttons = money_buttons(self.store, fresh) or None
+                buttons = (draft_buttons or []) + (money_buttons(self.store, fresh) or []) or None
             self.alerts.notify(reply_alert(fresh, mail["from"], text, decision, outcome),
                                "red" if (decision.get("hot") or decision.get("held")) else "orange", buttons=buttons)
             self.store.kv_set(key, "replied")

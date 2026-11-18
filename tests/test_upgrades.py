@@ -407,3 +407,48 @@ def test_pool_pauses_only_the_blocked_inbox(store):
     pause(store, blocked_address, 24)
     pool.send("y@lead.example", "hi", "hey")
     assert len(a.sent) == 1 and pool.extra_capacity() == 0 and not pool.all_paused()
+
+
+def test_hands_off_leads_are_recorded_but_never_auto_answered(store, make_engine):
+    live()
+    t = RecentTransport()
+    w = worker(store, t)
+    lead, _ = sent_lead(store, w, t, email="ivan@ru.example", key="ho1")
+    store.update_lead_fields(lead["id"], data={**(store.get_lead(lead["id"])["data"] or {}), "hands_off": True})
+    before = len(t.sent)
+    t.inbox = [mail(uid="1", **{"from": "ivan@ru.example"}, message_id="<ho@x>", body="напишите мне в телеграм")]
+    assert w.handle_replies() == 1
+    assert len(t.sent) == before and w.closer.calls == []
+    assert "handling this one by hand" in w.alerts.items[-1][1] and store.get_lead(lead["id"])["state"] == "REPLIED"
+    engine = make_engine()
+    out = engine.execute(f"auto {lead['id']}")
+    assert out["success"] and store.get_lead(lead["id"])["data"]["hands_off"] is False
+
+
+def test_example_and_help_desk_addresses_are_never_cold_emailed(store):
+    live()
+    from nexus.integrations.mx_check import is_unusable_address
+    assert is_unusable_address("you@company.com") and is_unusable_address("jane@company.com")
+    assert is_unusable_address("support@zanta.example") and is_unusable_address("legal@murer.example")
+    assert not is_unusable_address("hello@palm.example") and not is_unusable_address("omar@palm.example")
+    t = RecentTransport()
+    w = worker(store, t)
+    lead, _ = store.upsert_lead(source="show_hn", dedupe_key="fake1", channel="email", contact="you@company.com", market="UAE")
+    out = store.stage_outreach(lead["id"], "email", "subject: hi" + chr(10) + "hey")
+    assert w.send_openers(IN_HOURS) == 0 and store.get_outreach(out["id"])["status"] == "rejected"
+
+
+def test_paused_auto_replies_become_one_tap_drafts(store):
+    live()
+    t = RecentTransport()
+    w = worker(store, t)
+    w.auto_reply = False
+    lead, _ = sent_lead(store, w, t, email="ivan@ru.example", key="dr1")
+    before = len(t.sent)
+    t.inbox = [mail(uid="1", **{"from": "ivan@ru.example"}, message_id="<q@x>", body="how much?")]
+    w.handle_replies()
+    assert len(t.sent) == before and "DRAFT, not sent" in w.alerts.items[-1][1]
+    assert w.alerts.buttons[0][0]["callback_data"] == f"rs:{lead['id']}"
+    assert w.send_reply_draft(lead["id"]).startswith("📤 Sent")
+    assert t.sent[-1]["in_reply_to"] == "<q@x>" and "what's your setup today" in t.sent[-1]["body"]
+    assert w.send_reply_draft(lead["id"]).startswith(("Something was already sent", "This draft was already"))
