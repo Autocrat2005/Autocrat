@@ -164,12 +164,19 @@ class TelegramBot:
         pieces = self._chunks(text)
         for chat_id in self.alert_recipients():
             for i, piece in enumerate(pieces):
-                try:
-                    await self._bot.send_message(chat_id=chat_id, text=piece, parse_mode="HTML",
-                                                 reply_markup=markup if i == len(pieces) - 1 else None,
-                                                 disable_notification=silent, disable_web_page_preview=True)
-                except Exception as e:
-                    log.warning(f"Telegram alert to {chat_id} failed: {e}")
+                for attempt, wait in enumerate((0, 5, 20, 60, 180)):
+                    if wait:
+                        await asyncio.sleep(wait)
+                    try:
+                        await self._bot.send_message(chat_id=chat_id, text=piece, parse_mode="HTML",
+                                                     reply_markup=markup if i == len(pieces) - 1 else None,
+                                                     disable_notification=silent, disable_web_page_preview=True)
+                        break
+                    except Exception as e:
+                        if "parse entities" in str(e).lower() or "chat not found" in str(e).lower():
+                            log.warning(f"Telegram alert to {chat_id} failed (not retrying): {e}")
+                            break
+                        log.warning(f"Telegram alert to {chat_id} failed (try {attempt + 1}/5): {e}")
 
     # ── cross-channel results from the message bus ──────────────
 

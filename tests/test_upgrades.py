@@ -452,3 +452,16 @@ def test_paused_auto_replies_become_one_tap_drafts(store):
     assert w.send_reply_draft(lead["id"]).startswith("📤 Sent")
     assert t.sent[-1]["in_reply_to"] == "<q@x>" and "what's your setup today" in t.sent[-1]["body"]
     assert w.send_reply_draft(lead["id"]).startswith(("Something was already sent", "This draft was already"))
+
+
+def test_email_drafts_just_inform_when_autocrat_sends_itself(store, monkeypatch):
+    from nexus.integrations.telegram_alerts import build_alert
+    from tests.test_email_channel import staged_email_lead
+    lead, out = staged_email_lead(store, email="omar@palm.example", key="inf1")
+    entry = {"event": "lead.transition", "data": {"to": "STAGED", "lead_id": lead["id"], "payload": {"outreach_id": out["id"]}}}
+    monkeypatch.setenv("EMAIL_AUTO_SEND", "1")
+    alert = build_alert(entry, store=store)
+    assert alert["text"].startswith("🟢 Going out automatically")
+    assert [b["callback_data"] for row in alert["buttons"] for b in row if "callback_data" in b] == [f"dnc:{lead['id']}"]
+    monkeypatch.setenv("EMAIL_AUTO_SEND", "0")
+    assert build_alert(entry, store=store)["buttons"][0][0]["callback_data"] == f"oa:{out['id']}"

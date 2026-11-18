@@ -40,6 +40,11 @@ def _lead_label(lead: Optional[Dict[str, Any]]) -> str:
     return f"<b>{html.escape(str(name))}</b>{market} (<code>{lead.get('id')}</code>)"
 
 
+def auto_sending() -> bool:
+    from nexus.core.secrets import env_bool
+    return env_bool("EMAIL_AUTO_SEND", False)
+
+
 def is_hiring_post(lead: Optional[Dict[str, Any]]) -> bool:
     """r/forhire [Hiring] posts and HN 'SEEKING FREELANCER' comments: buyers with a budget, right now."""
     data = (lead or {}).get("data") or {}
@@ -115,6 +120,9 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
                                                                      split_subject(outreach["draft"])[1])},
                      {"text": "✔ Sent", "callback_data": f"ws:{outreach['id']}"}],
                     [{"text": "🚫 DNC", "callback_data": f"dnc:{lead_id}"}]]
+        elif outreach["channel"] == "email" and auto_sending():
+            # Autocrat sends these itself in the recipient's business hours: tell, don't ask.
+            rows = [[{"text": "🚫 Don't send (DNC)", "callback_data": f"dnc:{lead_id}"}]]
         else:
             rows = [[
                 {"text": "✅ Approve", "callback_data": f"oa:{outreach['id']}"},
@@ -127,9 +135,11 @@ def build_alert(entry: Dict[str, Any], store=None) -> Optional[Dict[str, Any]]:
             # Someone is paying for help right now: the first good reply usually wins.
             return {"priority": "red", "buttons": rows,
                     "text": f"⚡ HIRING POST · reply within the hour · {_lead_label(lead)}\n{score}{where}\n\n<i>{draft}</i>"}
+        head = ("🟢 Going out automatically in their business hours" if outreach["channel"] == "email"
+                and auto_sending() else "🟠 Ready to send")
         return {
             "priority": "orange",
-            "text": f"🟠 Ready to send · {_lead_label(lead)}\n{score}{where}\n\n<i>{draft}</i>",
+            "text": f"{head} · {_lead_label(lead)}\n{score}{where}\n\n<i>{draft}</i>",
             "buttons": rows,
         }
 
