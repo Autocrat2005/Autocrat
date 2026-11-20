@@ -465,3 +465,15 @@ def test_email_drafts_just_inform_when_autocrat_sends_itself(store, monkeypatch)
     assert [b["callback_data"] for row in alert["buttons"] for b in row if "callback_data" in b] == [f"dnc:{lead['id']}"]
     monkeypatch.setenv("EMAIL_AUTO_SEND", "0")
     assert build_alert(entry, store=store)["buttons"][0][0]["callback_data"] == f"oa:{out['id']}"
+
+
+def test_cold_pause_holds_first_emails_but_not_follow_ups(store, monkeypatch):
+    live()
+    monkeypatch.setenv("EMAIL_PAUSE_COLD", "1")
+    t = RecentTransport()
+    w = worker(store, t)
+    a, _ = store.upsert_lead(source="list", dedupe_key="pc1", channel="email", contact="a@x.example", market="UAE")
+    store.stage_outreach(a["id"], "email", "subject: hi" + chr(10) + "hey")
+    assert w.send_openers(IN_HOURS) == 0 and t.sent == []
+    monkeypatch.setenv("EMAIL_PAUSE_COLD", "0")
+    assert w.send_openers(IN_HOURS) == 1

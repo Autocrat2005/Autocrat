@@ -527,6 +527,9 @@ class Store:
         self.audit(actor, "outreach_reject", {"outreach_id": outreach_id, "reason": reason})
         lead = self.get_lead(out["lead_id"])
         if lead and lead["state"] in (LeadState.STAGED.value, LeadState.APPROVED.value):
+            if lead["state"] == LeadState.APPROVED.value:      # approved can only step back to staged first
+                self.transition(out["lead_id"], LeadState.STAGED.value, actor=actor,
+                                payload={"outreach_id": outreach_id, "reason": "approval withdrawn"})
             self.transition(out["lead_id"], LeadState.ARCHIVED.value, actor=actor,
                             payload={"outreach_id": outreach_id, "reason": reason or "skipped"})
         self._events.emit("outreach.rejected", {"lead_id": out["lead_id"], "outreach": out, "actor": actor})

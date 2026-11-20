@@ -935,6 +935,8 @@ class EmailWorker:
             to = (lead or {}).get("contact") or ""
             if not lead or "@" not in to:
                 continue
+            if env_bool("EMAIL_PAUSE_COLD", False) and not (out.get("kind") or "").startswith("followup"):
+                continue   # new first emails are on hold (follow-ups to people already contacted still go)
             from_list = "row" in (lead.get("data") or {}) and not (out.get("kind") or "").startswith("followup")
             if from_list and sent_today + sent >= list_cap:
                 continue
