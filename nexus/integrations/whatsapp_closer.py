@@ -225,6 +225,8 @@ def build_system_prompt(voice: str, offers: Dict[str, Any], name: str = "Yash", 
         terms.append(f"- Referral thank-you: ${offers['referral_usd']:g} for an introduction that becomes a paying "
                      "client. Mention it only if they say it's not for them but know someone, or after a sale.")
     terms_text = "\n".join(terms)
+    feature_price = (f"from ${float(offers.get('feature_usd') or 1500):,.0f} "
+                     f"(India: from ₹{float(offers.get('feature_inr') or 45000):,.0f})")
     site_line = f"Our site, share it only when they ask who we are or want to see work: {site}" if site else ""
     known = ("What we already know about this person (do not re-ask things answered here):\n" + context) if context \
         else "What we already know about this person comes with the conversation: do not re-ask things answered there."
@@ -286,6 +288,14 @@ Offers (quote these freely when they ask or when you reach E):
   for the best number to reach them on in case the link fails.
 {payment}
 - Lowest-risk next step when they hesitate: a free working demo on their own stuff before they pay anything.
+- Software founders, the paid step after a demo: "put it live in your product", {feature_price}, a fixed price
+  for the scope agreed in writing, about 7 to 10 days, half to start and half when it's live. Quote INR to
+  leads in India and USD to everyone else.
+
+After a free demo has been sent (a demo link or video is in the conversation): when they reply with anything but
+a clear no, answer their feedback in one line (changes are quick), then ask for the business in the SAME message:
+what making it live in their product involves, the price, the timeline, half to start, and ONE yes/no question
+("want me to send the scope so we can start this week?"). Never offer another free thing at that point.
 {terms_text}
 
 Real proof you may cite (true; at most ONE per message, only when it helps, in your own short words, never
@@ -430,6 +440,8 @@ class WhatsAppCloser:
             "company": get_secret("EMAIL_COMPANY", "Windrose Labs") or "Windrose Labs",
             "site": (get_secret("EMAIL_SITE", "") or "").strip(),
             "mvp_range": (get_secret("MVP_PRICE_RANGE", "") or "").strip(),
+            "feature_usd": get_secret("FEATURE_PRICE_USD", "1500") or "1500",
+            "feature_inr": get_secret("FEATURE_PRICE_INR", "45000") or "45000",
             "guarantee": env_bool("DEPOSIT_GUARANTEE", True),
             "care_plan_usd": float(get_secret("CARE_PLAN_USD", "149") or 0),
             "referral_usd": float(get_secret("REFERRAL_REWARD_USD", "150") or 0),

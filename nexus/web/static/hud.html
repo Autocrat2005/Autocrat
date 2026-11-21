@@ -156,7 +156,7 @@ table.attr td.money{color:var(--amber);font-weight:600}
 
     <section class="col" style="flex:1.1 1 340px" aria-label="Approvals and live feed">
       <div class="panel amber">
-        <div class="ph"><h2 class="amber">AWAITING YOU</h2><span class="mono small muted" id="queueMeta"></span></div>
+        <div class="ph"><h2 class="amber">OUTBOX</h2><span class="mono small muted" id="queueMeta"></span></div>
         <div class="scroll" id="queue"></div>
       </div>
       <div class="panel" style="flex:1">
@@ -335,8 +335,10 @@ table.attr td.money{color:var(--amber);font-weight:600}
   }
 
   function renderQueue() {
-    const q = snap.queue || [];
-    $('queueMeta').textContent = q.length + ' drafts · ' + q.filter(x => x.auto).length + ' auto-send';
+    // Auto-send emails are shown for reading only; what truly needs a human (hand-sent posts, WhatsApp) goes first.
+    const q = (snap.queue || []).slice().sort((a, b) => (a.auto ? 1 : 0) - (b.auto ? 1 : 0));
+    const mine = q.filter(x => !x.auto).length;
+    $('queueMeta').textContent = (mine ? mine + ' need you · ' : 'nothing needs you · ') + q.filter(x => x.auto).length + ' going out automatically';
     $('queue').innerHTML = q.map(x => `
       <article class="q" data-id="${esc(x.id)}">
         <div class="who"><strong style="font-weight:600;overflow:hidden;text-overflow:ellipsis">${esc(x.company || x.name || x.contact)}</strong>
@@ -345,12 +347,12 @@ table.attr td.money{color:var(--amber);font-weight:600}
           ${(x.kind || '').startsWith('followup') ? `<span class="tag auto">follow-up ${esc(x.kind.slice(-1))}</span>` : ''}
           <span class="tag">${esc(SRC_NAMES[x.source] || x.source)}</span><span class="tag">${esc(x.channel)}</span>
           ${x.market ? `<span class="tag">${esc(x.market)}</span>` : ''}
-          ${x.status === 'approved' ? '<span class="tag auto">approved</span>' : x.auto ? '<span class="tag auto">auto-sends in their hours</span>' : '<span class="tag">needs you</span>'}
+          ${x.auto ? '<span class="tag auto">auto-sends in their hours</span>' : x.status === 'approved' ? '<span class="tag auto">approved</span>' : '<span class="tag">needs you</span>'}
           ${/^https?:\/\//i.test(x.url || '') ? `<a class="tag" href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">open</a>` : ''}
         </div>
         <p data-draft>${esc(x.draft)}</p>
         <div class="acts">
-          ${x.status === 'staged' ? `<button class="b-amber b-sm" data-act="approve">Approve</button>` : ''}
+          ${x.status === 'staged' && !x.auto ? `<button class="b-amber b-sm" data-act="approve">Approve</button>` : ''}
           <button class="b-sm" data-act="edit">Edit</button>
           <button class="b-ghost b-sm" data-act="skip">Skip</button>
           <button class="b-red b-sm" data-act="dnc">DNC</button>

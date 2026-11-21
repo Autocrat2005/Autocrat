@@ -82,7 +82,9 @@ def build_snapshot(engine) -> Dict[str, Any]:
     for r in c.execute(
             "SELECT o.id, o.lead_id, o.channel, o.kind, o.draft, o.status, o.created_at, l.name, l.company, l.source,"
             " l.market, l.contact, l.url FROM outreach o JOIN leads l ON l.id = o.lead_id"
-            " WHERE o.status IN ('staged','approved') ORDER BY o.created_at DESC LIMIT 60"):
+            " WHERE o.status IN ('staged','approved')"
+            # what needs a human (posts, WhatsApp) first, so the 60-row limit never hides it behind auto emails
+            " ORDER BY CASE WHEN o.channel='email' THEN 1 ELSE 0 END, o.created_at DESC LIMIT 60"):
         row = dict(r)
         row["auto"] = bool(auto_email and row["channel"] == "email")
         row["age"] = _ago(row["created_at"])

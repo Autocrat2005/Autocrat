@@ -477,3 +477,22 @@ def test_cold_pause_holds_first_emails_but_not_follow_ups(store, monkeypatch):
     assert w.send_openers(IN_HOURS) == 0 and t.sent == []
     monkeypatch.setenv("EMAIL_PAUSE_COLD", "0")
     assert w.send_openers(IN_HOURS) == 1
+
+
+def test_closer_asks_for_the_business_after_a_demo():
+    """After a free demo the closer names the paid step, in INR for India and USD otherwise."""
+    from nexus.integrations.whatsapp_closer import build_system_prompt
+    prompt = build_system_prompt("hey", {"feature_usd": "1500", "feature_inr": "45000"})
+    assert "from $1,500 (India: from ₹45,000)" in prompt
+    assert "After a free demo has been sent" in prompt
+    assert "Never offer another free thing at that point" in prompt
+    cheaper = build_system_prompt("hey", {"feature_usd": "900", "feature_inr": "30000"})
+    assert "from $900 (India: from ₹30,000)" in cheaper
+
+
+def test_first_followup_offers_a_free_demo():
+    """Follow-up 1 (AI-written) offers a small free working demo, the offer founders said yes to."""
+    import inspect
+    from nexus.integrations.email_channel import EmailWorker
+    src = inspect.getsource(EmailWorker.draft_followup)
+    assert "small working demo" in src and "free" in src

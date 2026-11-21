@@ -731,8 +731,10 @@ class EmailWorker:
         system = (
             f"Write follow-up #{n} of 2 from Yash in an email thread. They got the message below and didn't reply.\n"
             "Rules: 1-2 short sentences, lowercase and casual like Yash's voice, no greeting line needed.\n"
-            + ("#1: add ONE new, specific, useful angle tied to their product (a quick free look at one thing, "
-               "or a concrete example of what usually breaks), then an easy yes/no question.\n" if n == 1 else
+            + ("#1: offer to build them a small working demo of ONE concrete thing for their product, free, on "
+               "their own site or sample data, so they can click around before deciding anything (if the first "
+               "message already offered a demo, offer a 45 second video of it instead). Then an easy yes/no "
+               "question.\n" if n == 1 else
                "#2: a polite last note that you'll stop here, leave the door open, no guilt, no pressure.\n")
             + "Never repeat the first message, never use placeholders like [name], never use em or en dashes, "
               "never claim clients or results. Return ONLY JSON: {\"draft\": \"...\"}\n\n"
@@ -1204,6 +1206,8 @@ class EmailWorker:
                     "references": mail["references"], "meeting": decision.get("meeting", ""),
                     "meeting_link": decision.get("meeting_link", ""), "intent": decision.get("intent")}, actor="closer")
                 outcome = f"DRAFT, not sent (auto-replies are paused):\n{reply}"
+                if re.search(r"\bdemos?\b", f"{text} {reply}", re.I):
+                    outcome += f"\n\n🛠️ To build their free demo now, send: demo {lead['id']}"
                 draft_buttons = [[{"text": "📤 Send this reply", "callback_data": f"rs:{lead['id']}"},
                                   {"text": "✋ I'll answer myself", "callback_data": f"rx:{lead['id']}"}]]
             elif reply and not RuntimeControl().killed:
