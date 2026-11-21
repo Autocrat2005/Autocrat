@@ -1172,7 +1172,7 @@ class NexusBrain:
     def __init__(self):
         self.model = None
         self.intent_embeddings = None
-        self.catalog = INTENT_CATALOG
+        self.catalog = list(INTENT_CATALOG)  # copy: plugins append their own intents
         self._ready = False
         self._loading = False
         self._phrase_to_intent = {}
@@ -1198,6 +1198,30 @@ class NexusBrain:
             self._intent_keywords[intent_def["intent"]] = words
 
     EMBEDDING_CACHE_PATH = "nexus_brain_embeddings.pt"
+
+    def add_intents(self, intent_defs: List[Dict]) -> int:
+        """Add plugin-contributed intents ({intent, phrases, action[, extract]}).
+
+        Call before initialize(); the embedding cache hash covers all phrases,
+        so new phrases invalidate it automatically. If the model is already
+        loaded, embeddings are rebuilt in the background.
+        """
+        known = {d["intent"] for d in self.catalog}
+        added = 0
+        for d in intent_defs:
+            if not d.get("phrases") or not d.get("action") or d.get("intent") in known:
+                continue
+            self.catalog.append(d)
+            known.add(d["intent"])
+            added += 1
+        if added:
+            self._intent_keywords = {}
+            self._build_keyword_index()
+            if self._ready:
+                import threading
+                self._ready = False
+                threading.Thread(target=self.initialize, daemon=True).start()
+        return added
 
     def initialize(self):
         """Load the sentence transformer model and intent embeddings.

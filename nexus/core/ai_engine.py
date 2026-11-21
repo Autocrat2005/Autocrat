@@ -219,6 +219,7 @@ class GeminiEngine:
 
     def _init_backend(self):
         """Initialize selected backend (local first)."""
+        self.gemini_model = "gemini-2.5-flash"
         if self.llm_backend == "local_ollama":
             self._ready = self._check_ollama_ready()
             if self._ready:
@@ -249,13 +250,15 @@ class GeminiEngine:
             return
 
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel("gemini-2.0-flash")
+            # google-genai (current SDK); the old google-generativeai package is deprecated.
+            from google import genai  # noqa: F401  (import check only)
+            from nexus.core.config import Config
+            self.gemini_model = Config().get("ai", "gemini_model", default="gemini-2.5-flash")
+            self.model = self.gemini_model
             self._ready = True
-            log.info("🤖 Gemini backend ready (gemini-2.0-flash)")
+            log.info(f"🤖 Gemini backend ready ({self.gemini_model}, via LLM router)")
         except Exception as e:
-            log.warning(f"Gemini init failed: {e}")
+            log.warning(f"Gemini init failed (pip install google-genai): {e}")
             self._ready = False
 
     def _check_ollama_ready(self) -> bool:
@@ -862,20 +865,12 @@ No markdown. No explanation. JSON only.
     def _ask_gemini(self, text: str) -> Optional[Dict]:
         """Ask Gemini to interpret the command."""
         try:
+            from nexus.core.llm_router import get_router
             system_prompt = self._make_system_prompt()
-            
-            response = self.model.generate_content(
-                [
-                    {"role": "user", "parts": [{"text": system_prompt}]},
-                    {"role": "model", "parts": [{"text": "Understood. I'll map commands to available actions or answer directly. Send me a command."}]},
-                    {"role": "user", "parts": [{"text": text}]},
-                ],
-                generation_config={
-                    "temperature": 0.1,
-                    "max_output_tokens": 500,
-                }
+            response = get_router().complete(
+                text, task="command", system=system_prompt, provider="gemini",
+                model=self.gemini_model, temperature=0.1, max_tokens=500,
             )
-
             reply = response.text.strip()
             log.info(f"🤖 Gemini replied: {reply[:120]}...")
 
@@ -1104,9 +1099,10 @@ No markdown. No explanation. JSON only.
 
         if self.llm_backend == "gemini":
             try:
-                response = self.model.generate_content(
-                    text,
-                    generation_config={"temperature": 0.7, "max_output_tokens": 1000},
+                from nexus.core.llm_router import get_router
+                response = get_router().complete(
+                    text, task="chat", provider="gemini", model=self.gemini_model,
+                    temperature=0.7, max_tokens=1000,
                 )
                 reply = response.text.strip()
                 self.memory.log_conversation(text, reply)
@@ -1123,7 +1119,7 @@ No markdown. No explanation. JSON only.
             "gemini_active": self._ready and self.llm_backend == "gemini",
             "llm_backend": self.llm_backend,
             "llm_active": self._ready,
-            "model": self.local_model if self.llm_backend == "local_ollama" else ("gemini-2.0-flash" if self._ready else "none"),
+            "model": self.local_model if self.llm_backend == "local_ollama" else (self.gemini_model if self._ready else "none"),
             "native_tool_calling": bool(self.use_native_tools and self._supports_native_tools),
             "streaming_enabled": True,
             "smart_context_window": True,

@@ -67,6 +67,11 @@ ABBREVIATIONS = {
 # ─── Vocabulary for typo correction ───────────────────────────────────────────
 # Important keywords that appear in COMMAND_PATTERNS — we correct typos against these.
 VOCAB = {
+    # Control plane + pipeline words: never "correct" these into something else
+    # (e.g. "mode" → "move" once turned "run mode live" into a shell command).
+    "mode", "resume", "switch", "live", "dry_run", "leads", "lead", "pipeline",
+    "outreach", "advance", "approve", "reject", "simulate", "dnc", "sent", "radar",
+    "triage", "forge",
     "screenshot", "volume", "brightness", "mute", "unmute", "clipboard",
     "process", "processes", "window", "windows", "minimize", "maximize",
     "focus", "close", "kill", "open", "launch", "start", "find", "search",
@@ -405,6 +410,14 @@ COMMAND_PATTERNS = [
 ]
 
 
+# Control-plane commands must win over generic patterns such as "kill <process>",
+# so they sit at the very front of the table.
+COMMAND_PATTERNS[:0] = [
+    (r"^(?:kill\s*switch|kill\s+all|stop\s+everything|engage\s+kill\s+switch)$", "_meta", "kill_switch", {}),
+    (r"^(?:resume|release\s+kill\s*switch|disengage\s+kill\s*switch)$", "_meta", "release_kill_switch", {}),
+    (r"^(?:run\s*mode|mode)(?:\s+(?P<mode>dry_run|dry\s+run|live))?$", "_meta", "run_mode", {}),
+]
+
 class CommandParser:
     """Parses text commands into structured ParsedCommand objects.
     
@@ -414,6 +427,17 @@ class CommandParser:
     """
 
     CHAIN_SEPARATORS = [" and then ", " && ", " then ", " >> "]
+
+    @staticmethod
+    def add_pattern(pattern: str, plugin: str, action: str,
+                    defaults: Optional[Dict[str, Any]] = None) -> bool:
+        """Register a plugin-contributed regex (checked before built-ins)."""
+        re.compile(pattern)  # fail fast on bad regex
+        entry = (pattern, plugin, action, defaults or {})
+        if entry in COMMAND_PATTERNS:
+            return False
+        COMMAND_PATTERNS.insert(0, entry)
+        return True
 
     def parse(self, text: str) -> List[ParsedCommand]:
         """Parse a text command. Supports chained commands."""
@@ -439,16 +463,17 @@ class CommandParser:
     def _parse_single(self, text: str) -> Optional[ParsedCommand]:
         """Parse a single command text with preprocessing."""
         original = text
-        preprocessed = preprocess_input(text)
 
-        # Try preprocessed version first
-        result = self._match_patterns(preprocessed, original)
+        # Exact input first: never "autocorrect" a command that already parses.
+        # (Autocorrect used to rewrite "run mode live" into "run move live",
+        # which then matched the shell executor, and it mangled message drafts.)
+        result = self._match_patterns(text.lower().strip(), original)
         if result:
             return result
 
-        # If preprocessing changed the input, also try original (case-insensitive)
-        if preprocessed != text.lower():
-            result = self._match_patterns(text.lower().strip(), original)
+        preprocessed = preprocess_input(text)
+        if preprocessed != text.lower().strip():
+            result = self._match_patterns(preprocessed, original)
             if result:
                 return result
 

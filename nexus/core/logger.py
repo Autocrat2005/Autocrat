@@ -81,6 +81,7 @@ class NexusLogger:
             return
         NexusLogger._initialized = True
 
+        log_dir = os.environ.get("AUTOCRAT_LOG_DIR") or log_dir   # tests point this at a temp dir
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
 
