@@ -443,6 +443,8 @@ class EmailWorker:
         self.wa_markets = [m.strip().lower() for m in
                            (get_secret("EMAIL_WHATSAPP_LINK_MARKETS", "UAE") or "UAE").split(",") if m.strip()]
         self.cap_max = int(get_secret("EMAIL_CAP_MAX", "60") or 60)
+        self.no_followup_sources = {s.strip() for s in (get_secret("EMAIL_NO_FOLLOWUP_SOURCES", "") or "").split(",")
+                                    if s.strip()}
         self.cap_step = int(get_secret("EMAIL_CAP_STEP", "3") or 3)
         self.followups_on = (get_secret("EMAIL_FOLLOWUPS", "1") or "1").lower() in ("1", "true", "yes")
         self.followup_days = [float(x) for x in (get_secret("EMAIL_FOLLOWUP_DAYS", "3,4") or "3,4").split(",") if x.strip()]
@@ -764,6 +766,8 @@ class EmailWorker:
                 lead = self.store.get_lead(r[0])
                 if not self._quiet(lead):
                     continue
+                if (lead.get("source") or "") in self.no_followup_sources:
+                    continue   # a list we've dropped: its send slots go to sources that reply
                 if any(e["type"] == "auto_reply" and now_ts - float(e["ts"]) < 5 * 86400
                        for e in self.store.lead_events(lead["id"])):
                     continue   # out of office: wait until they're likely back
@@ -806,24 +810,24 @@ class EmailWorker:
         return {s: self.rng.betavariate(replied.get(s, 0) + 1, max(0, n - replied.get(s, 0)) + 1) for s, n in sent.items()}
 
     def prioritise(self, queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Warm threads first, then people who are hiring right now, then the best source and the clearest pain."""
+        """People hiring a freelancer right now first; everything else (first emails and follow-ups alike) by how
+        often its source actually replies, so a source that works isn't starved by follow-ups to one that doesn't."""
         from nexus.integrations.telegram_alerts import is_hiring_post
         scores = self.source_scores()
 
         def rank(out: Dict[str, Any]):
-            if (out.get("kind") or "").startswith("followup"):
-                return (0, 0.0)
             lead = self.store.get_lead(out["lead_id"]) or {}
             data = lead.get("data") or {}
-            if is_hiring_post(lead):
-                return (1, 0.0)
+            followup = (out.get("kind") or "").startswith("followup")
+            if not followup and is_hiring_post(lead) and not data.get("full_time"):
+                return (0, 0.0)          # a buyer with a budget asking for help today: minutes matter
             source = lead.get("source") or ""
             if source not in scores:
                 scores[source] = self.rng.betavariate(1, 1)
             pain = min(3, len((data.get("site_check") or {}).get("findings") or []))
             reviews = str(data.get("reviews") or "").replace(",", "")
             pain += 1 if reviews.isdigit() and int(reviews) >= 30 else 0
-            return (2, -(scores[source] + 0.05 * pain))
+            return (1, -(scores[source] + 0.05 * pain + (0.01 if followup else 0.0)))
         return sorted(queue, key=rank)
 
     def stage_whatsapp_touch(self, now: Optional[datetime] = None) -> int:

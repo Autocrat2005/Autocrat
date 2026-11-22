@@ -270,3 +270,19 @@ def test_every_reply_alerts_once_with_their_words_and_our_answer(store):
     alerts = [text for prio, text in w.alerts.items]
     assert len(alerts) == 1 and w.alerts.items[0][0] == "red"
     assert "HOT email reply" in alerts[0] and "what does it cost" in alerts[0] and "auto-replied" in alerts[0]
+
+
+def test_no_follow_ups_for_dropped_lists(store, monkeypatch):
+    RuntimeControl().set_run_mode("live", actor="test")
+    t = FakeTransport()
+    w = make_worker(store, t)
+    w.no_followup_sources = {"uae_brokers"}
+    monkeypatch.setattr(w, "draft_followup", lambda lead, n, text: f"bump {n}: happy to build a small free demo?")
+    broker, _ = sent_opener(store, w, t, email="sara@agency.ae", key="b1", days_ago=3.5)
+    founder, _ = sent_opener(store, w, t, email="sam@startup.com", key="f1", days_ago=3.5)
+    with store.transaction() as c:
+        c.execute("UPDATE leads SET source='uae_brokers' WHERE id=?", (broker["id"],))
+        c.execute("UPDATE leads SET source='launch_boards' WHERE id=?", (founder["id"],))
+    assert w.stage_followups() == 1
+    staged = store._conn().execute("SELECT lead_id FROM outreach WHERE kind='followup_1'").fetchall()
+    assert [r[0] for r in staged] == [founder["id"]]

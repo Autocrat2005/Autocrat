@@ -148,10 +148,13 @@ def test_not_now_sets_a_dated_check_back(store):
     store.log_event(lead["id"], "message_out", {"text": "sure, i'll check back then", "channel": "email"}, actor="closer")
     assert store.get_lead(lead["id"])["data"]["call_phone"] == "+971501234567"
     before = len(t.sent)
-    assert w.nudge_quiet_conversations(now=NOW + timedelta(days=5)) == 0 and len(t.sent) == before   # still snoozed
-    assert w.nudge_quiet_conversations(now=NOW + timedelta(days=35)) == 1
+    # The snooze is dated from the real clock, so step NOW forward by whole weeks (same weekday and hour) to today.
+    weeks = max(0, -(-(datetime.now(timezone.utc) - NOW).days // 7))
+    base = NOW + timedelta(weeks=weeks)
+    assert w.nudge_quiet_conversations(now=base + timedelta(days=5)) == 0 and len(t.sent) == before  # still snoozed
+    assert w.nudge_quiet_conversations(now=base + timedelta(days=35)) == 1
     assert "check back around now" in t.sent[-1]["body"]
-    assert w.nudge_quiet_conversations(now=NOW + timedelta(days=40)) == 0                             # once
+    assert w.nudge_quiet_conversations(now=base + timedelta(days=40)) == 0                            # once
 
 
 def test_day_before_confirmation_goes_out_once(store):
@@ -195,16 +198,20 @@ def test_dead_domains_are_never_emailed(store, monkeypatch):
     assert store.get_outreach(out["id"])["status"] == "rejected" and store.get_lead(lead["id"])["state"] == "ARCHIVED"
 
 
-def test_hiring_posts_and_follow_ups_jump_the_queue(store):
+def test_freelance_gigs_first_then_whichever_source_replies(store, monkeypatch):
+    """A buyer hiring a freelancer today goes first. After that, a source that replies beats a source that doesn't,
+    even when the silent source's email is a follow-up; a full-time job post is not a buyer signal."""
     w = worker(store)
+    monkeypatch.setattr(w, "source_scores", lambda: {"launch_boards": 0.10, "uae_brokers": 0.01, "hn_hiring": 0.05})
     ids = {}
-    for key, source, data in (("p1", "list", {}), ("p2", "forum_jobs", {"hiring": True}), ("p3", "list", {})):
+    for key, source, data, kind in (("gig", "forum_jobs", {"hiring": True}, "first_touch"),
+                                    ("job", "hn_hiring", {"hiring": True, "full_time": True}, "first_touch"),
+                                    ("founder", "launch_boards", {}, "first_touch"),
+                                    ("broker", "uae_brokers", {}, "followup_1")):
         lead, _ = store.upsert_lead(source=source, dedupe_key=key, channel="email", contact=f"{key}@x.example", data=data)
-        ids[key] = store.stage_outreach(lead["id"], "email", "subject: hi\nhey", kind="first_touch")
-    lead, _ = store.upsert_lead(source="list", dedupe_key="p4", channel="email", contact="p4@x.example")
-    ids["p4"] = store.stage_outreach(lead["id"], "email", "any thoughts?", kind="followup_1")
-    order = [o["id"] for o in w.prioritise([ids["p1"], ids["p2"], ids["p3"], ids["p4"]])]
-    assert order[0] == ids["p4"]["id"] and order[1] == ids["p2"]["id"]
+        ids[key] = store.stage_outreach(lead["id"], "email", "subject: hi\nhey", kind=kind)
+    order = [o["id"] for o in w.prioritise([ids["broker"], ids["job"], ids["founder"], ids["gig"]])]
+    assert order == [ids["gig"]["id"], ids["founder"]["id"], ids["job"]["id"], ids["broker"]["id"]]
 
 
 def test_follow_up_one_offers_what_we_noticed_for_free(store):
@@ -496,3 +503,34 @@ def test_first_followup_offers_a_free_demo():
     from nexus.integrations.email_channel import EmailWorker
     src = inspect.getsource(EmailWorker.draft_followup)
     assert "small working demo" in src and "free" in src
+
+
+def test_fill_in_the_blank_addresses_are_not_inboxes():
+    from nexus.integrations.mx_check import is_unusable_address
+    for fake in ("my-last-name@startup.example", "firstname.lastname@acme.io", "first_initial+lastname@acme.io",
+                 "surname@acme.io"):
+        assert is_unusable_address(fake), fake
+    for real in ("ralph@startup.example", "renata@acme.io", "nameer@acme.io", "jonathan@acme.io"):
+        assert is_unusable_address(real) == "", real
+
+
+def test_telegram_bot_keeps_retrying_when_the_network_is_down(monkeypatch):
+    """A timeout at start-up used to kill the bot thread for the whole session; now it waits and tries again."""
+    import nexus.integrations.telegram_bot as tb
+    bot = tb.TelegramBot.__new__(tb.TelegramBot)
+    bot._running, bot._app, bot._bot = True, None, None
+    calls, waits = [], []
+
+    class FakeLoop:
+        def run_until_complete(self, coro):
+            coro.close()
+            calls.append(1)
+            if len(calls) < 3:
+                raise TimeoutError("Timed out")
+
+    monkeypatch.setattr(tb.asyncio, "new_event_loop", lambda: FakeLoop())
+    monkeypatch.setattr(tb.asyncio, "set_event_loop", lambda loop: None)
+    monkeypatch.setattr(tb.time, "sleep", lambda s: waits.append(s))
+    bot.bot_token = "123:abc"
+    bot._run_bot()
+    assert len(calls) == 3 and waits == [10, 30]

@@ -20,6 +20,7 @@ import asyncio
 import html
 import json
 import threading
+import time
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from nexus.core.events import EventBus
@@ -263,10 +264,10 @@ class TelegramBot:
             app.add_handler(CallbackQueryHandler(self._handle_callback,
                                                  pattern=r"^(approve|reject|oa|os|ws|dnc|pay|mo|cl|pt|rs|rx):"))
             app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message))
-            log.info("📱 Telegram bot polling started")
             await app.initialize()
             await app.start()
             await app.updater.start_polling(drop_pending_updates=True)
+            log.info("📱 Telegram bot polling started")
             try:
                 while self._running:
                     await asyncio.sleep(1)
@@ -275,7 +276,21 @@ class TelegramBot:
                 await app.stop()
                 await app.shutdown()
 
-        self._loop.run_until_complete(_main())
+        # A slow or dropped connection at start-up used to kill the bot for the whole session (no alerts, no
+        # commands) while email kept going. Keep retrying until it connects: 10s, 30s, 60s, then every 2 minutes.
+        waits = [10, 30, 60]
+        attempt = 0
+        while self._running:
+            try:
+                self._loop.run_until_complete(_main())
+                return
+            except Exception as e:
+                wait = waits[attempt] if attempt < len(waits) else 120
+                attempt += 1
+                self._app = self._bot = None
+                log.warning(f"Telegram bot couldn't connect ({type(e).__name__}: {str(e)[:120]}); "
+                            f"retrying in {wait}s (attempt {attempt})")
+                time.sleep(wait)
 
     def stop(self):
         self._running = False

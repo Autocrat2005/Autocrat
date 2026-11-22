@@ -9,6 +9,7 @@ Set MX_CHECK=0 to switch it off.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Callable, Optional
 
@@ -31,6 +32,9 @@ OK_TTL, BAD_TTL = 30 * 86400, 3 * 86400
 PLACEHOLDER_LOCALS = {"you", "your", "yourname", "your.name", "name", "email", "youremail", "johndoe", "john.doe",
                       "jane.doe", "janedoe", "jdoe", "user", "username", "test", "example", "someone", "firstname",
                       "first.last", "firstname.lastname", "myname", "sample"}
+# "email me at my-last-name@…", "firstname.lastname@…", "first_initial+last@…": a pattern to fill in, not an inbox.
+PLACEHOLDER_LOCAL_RE = re.compile(r"^(?:my|your)?[-_.]?(?:first|last|full|given|sur)?[-_.]?(?:initial|name)s?"
+                                  r"(?:[-_.+]?(?:first|last|sur)?[-_.]?(?:initial|name)s?)?$")
 PLACEHOLDER_DOMAINS = {"company.com", "domain.com", "example.com", "example.org", "example.net", "yourdomain.com",
                        "yourcompany.com", "website.com", "yoursite.com", "acme.com", "email.com", "test.com",
                        "mysite.com", "sentry.io", "wixpress.com", "sentry.wixpress.com"}
@@ -44,7 +48,7 @@ def is_unusable_address(address: str) -> str:
     local, _, domain = (address or "").strip().lower().partition("@")
     if not local or not domain:
         return "not an address"
-    if domain in PLACEHOLDER_DOMAINS or local in PLACEHOLDER_LOCALS:
+    if domain in PLACEHOLDER_DOMAINS or local in PLACEHOLDER_LOCALS or PLACEHOLDER_LOCAL_RE.match(local):
         return "an example address from a form or docs"
     if any(local == r or local.startswith(r + ".") or local.startswith(r + "-") or local.startswith(r + "_")
            for r in ROLE_LOCALS):
