@@ -75,10 +75,10 @@ def test_reply_from_a_colleague_matches_by_thread_and_domain(store):
     RuntimeControl().set_run_mode("live", actor="test")
     t = RecentTransport()
     w = worker(store, t)
-    lead, opener = sent_lead(store, w, t, email="hello@acme.example", key="a1")
+    lead, opener = sent_lead(store, w, t, email="hello@brightloop.example", key="a1")
     our_id = store.lead_events(lead["id"])[-1]["payload"]["message_id"]
-    t.inbox = [mail(uid="5", **{"from": "cto@acme.example"}, message_id="<c@acme.example>", in_reply_to=our_id, body="send details")]
-    assert w.handle_replies() == 1 and t.sent[-1]["to"] == "cto@acme.example"
+    t.inbox = [mail(uid="5", **{"from": "cto@brightloop.example"}, message_id="<c@brightloop.example>", in_reply_to=our_id, body="send details")]
+    assert w.handle_replies() == 1 and t.sent[-1]["to"] == "cto@brightloop.example"
     t.inbox = [mail(uid="6", **{"from": "someone@gmail.com"}, message_id="<g@x>", body="hi")]
     assert w.handle_replies() == 0                    # free-mail domains never match by domain
 

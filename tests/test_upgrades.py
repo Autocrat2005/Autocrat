@@ -507,10 +507,10 @@ def test_first_followup_offers_a_free_demo():
 
 def test_fill_in_the_blank_addresses_are_not_inboxes():
     from nexus.integrations.mx_check import is_unusable_address
-    for fake in ("my-last-name@startup.example", "firstname.lastname@acme.io", "first_initial+lastname@acme.io",
-                 "surname@acme.io"):
+    for fake in ("my-last-name@startup.example", "firstname.lastname@brightloop.io", "first_initial+lastname@brightloop.io",
+                 "surname@brightloop.io"):
         assert is_unusable_address(fake), fake
-    for real in ("ralph@startup.example", "renata@acme.io", "nameer@acme.io", "jonathan@acme.io"):
+    for real in ("ralph@startup.example", "renata@brightloop.io", "nameer@brightloop.io", "jonathan@brightloop.io"):
         assert is_unusable_address(real) == "", real
 
 
@@ -595,3 +595,14 @@ def test_reply_alert_on_the_check_track_says_how_to_run_it(store):
     w.handle_replies()
     alert = w.alerts.items[-1][1]
     assert "🔐 They got the free AI security check offer" in alert and "verify every break by hand" in alert
+
+
+def test_sample_company_names_are_placeholders_on_any_ending():
+    """Sites copy sample addresses like lee@acme.dev into their pages; a real company is never named acme here."""
+    from nexus.integrations.mx_check import domain_name, is_unusable_address
+    for fake in ("lee@acme.dev", "hi@example.io", "jane@mail.yourcompany.co.uk", "ops@test.ai", "a@company.co"):
+        assert is_unusable_address(fake), fake
+    for real in ("lee@brightloop.dev", "hello@acmecorp.com", "founder@companycam.com", "sam@testflight.io",
+                 "team@brightloop.co.uk"):
+        assert is_unusable_address(real) == "", real
+    assert domain_name("mail.acme.co.uk") == "acme" and domain_name("acme.dev") == "acme"

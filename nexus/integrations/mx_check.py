@@ -38,6 +38,18 @@ PLACEHOLDER_LOCAL_RE = re.compile(r"^(?:my|your)?[-_.]?(?:first|last|full|given|
 PLACEHOLDER_DOMAINS = {"company.com", "domain.com", "example.com", "example.org", "example.net", "yourdomain.com",
                        "yourcompany.com", "website.com", "yoursite.com", "acme.com", "email.com", "test.com",
                        "mysite.com", "sentry.io", "wixpress.com", "sentry.wixpress.com"}
+# The same sample names on any ending: "lee@acme.dev", "hi@example.io", "jane@mail.yourcompany.co.uk".
+PLACEHOLDER_NAMES = {"acme", "example", "yourcompany", "yourdomain", "mycompany", "companyname", "yoursite", "mysite",
+                     "yourwebsite", "domain", "company", "website", "sample", "test", "foo", "foobar"}
+TWO_PART_ENDINGS = {"co.uk", "org.uk", "com.au", "co.in", "co.nz", "com.br", "co.za", "com.sg", "co.jp", "com.mx"}
+
+
+def domain_name(domain: str) -> str:
+    """The name part of a domain, without its ending: mail.acme.co.uk → acme."""
+    parts = [p for p in domain.lower().strip(".").split(".") if p]
+    if len(parts) >= 3 and ".".join(parts[-2:]) in TWO_PART_ENDINGS:
+        return parts[-3]
+    return parts[-2] if len(parts) >= 2 else ""
 # Inboxes that answer with a canned ticket or don't exist on a young product: wrong people, frequent bounces.
 ROLE_LOCALS = ("support", "help", "helpdesk", "legal", "privacy", "security", "abuse", "noreply", "no-reply",
                "donotreply", "billing", "careers", "jobs", "press", "dpo", "compliance")
@@ -48,7 +60,8 @@ def is_unusable_address(address: str) -> str:
     local, _, domain = (address or "").strip().lower().partition("@")
     if not local or not domain:
         return "not an address"
-    if domain in PLACEHOLDER_DOMAINS or local in PLACEHOLDER_LOCALS or PLACEHOLDER_LOCAL_RE.match(local):
+    if domain in PLACEHOLDER_DOMAINS or domain_name(domain) in PLACEHOLDER_NAMES \
+            or local in PLACEHOLDER_LOCALS or PLACEHOLDER_LOCAL_RE.match(local):
         return "an example address from a form or docs"
     if any(local == r or local.startswith(r + ".") or local.startswith(r + "-") or local.startswith(r + "_")
            for r in ROLE_LOCALS):
