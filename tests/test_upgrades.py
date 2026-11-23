@@ -534,3 +534,64 @@ def test_telegram_bot_keeps_retrying_when_the_network_is_down(monkeypatch):
     bot.bot_token = "123:abc"
     bot._run_bot()
     assert len(calls) == 3 and waits == [10, 30]
+
+
+# ── the AI security check offer ─────────────────────────────────
+
+class SystemRouter(Router):
+    def complete(self, prompt, task="default", **kwargs):
+        self.systems = getattr(self, "systems", []) + [kwargs.get("system") or ""]
+        return super().complete(prompt, task=task, **kwargs)
+
+
+def test_closer_knows_the_free_check_and_what_it_leads_to():
+    """The check is capped (production gets fewer, gentler tries), needs a written OK, and after the results the
+    closer asks for the fix sprint, with the report alone as the smaller option."""
+    prompt = build_system_prompt("hey", {"feature_usd": "1500", "feature_inr": "45000", "ai_report_usd": "400"})
+    assert "Free AI security check" in prompt and "30 to 50" in prompt and "25 to 30 gentle tries" in prompt
+    assert "OK in writing" in prompt and "never claim or hint we tested it" in prompt
+    assert "After the security check results have been sent" in prompt
+    assert '"harden and fix" sprint, from $1,500 (India: from ₹45,000)' in prompt
+    assert "the full written report on its own is $400" in prompt
+
+
+def test_closer_context_says_which_offer_they_got(store, monkeypatch):
+    from nexus.integrations.whatsapp_closer import lead_context
+    monkeypatch.setenv("AI_CHECK_SAMPLE_URL", "https://check-sample.example/report")
+    lead, _ = store.upsert_lead(source="launch_boards", dedupe_key="site:acme.example", name="Sam",
+                                data={"track": "ai_check", "ai_surface": {"is": True, "what": "your support bot"}})
+    context = lead_context(store.get_lead(lead["id"]))
+    assert "free AI security check of your support bot" in context
+    assert "https://check-sample.example/report" in context
+    hosts = closer(store, Router([{}]))._allowed_hosts(store.get_lead(lead["id"]), "")
+    assert closer_lint("here it is: https://check-sample.example/report", hosts) == []
+    plain, _ = store.upsert_lead(source="launch_boards", dedupe_key="site:other.example", name="Kim", data={})
+    assert "security check" not in lead_context(store.get_lead(plain["id"]))
+
+
+def test_first_followup_on_the_check_track_offers_the_sample_report(store, monkeypatch):
+    w = worker(store)
+    w.closer.router = SystemRouter([{"draft": "want me to send the sample report?"}])
+    lead, _ = store.upsert_lead(source="launch_boards", dedupe_key="site:bot.example", name="Sam",
+                                data={"track": "ai_check", "ai_surface": {"is": True, "what": "your bot"},
+                                      "site_check": {"url": "https://bot.example", "findings": ["a", "b", "c"]}})
+    monkeypatch.setenv("AI_CHECK_SAMPLE_URL", "https://check-sample.example/report")
+    assert w.draft_followup(store.get_lead(lead["id"]), 1, "hey") == "want me to send the sample report?"
+    system = w.closer.router.systems[-1]
+    assert "sample report" in system and "small working demo" not in system
+    monkeypatch.setenv("AI_CHECK_SAMPLE_URL", "")
+    w.draft_followup(store.get_lead(lead["id"]), 1, "hey")
+    assert "hidden instructions" in w.closer.router.systems[-1]
+
+
+def test_reply_alert_on_the_check_track_says_how_to_run_it(store):
+    live()
+    t = RecentTransport()
+    w = worker(store, t)
+    w.auto_reply = False
+    lead, _ = sent_lead(store, w, t, email="sam@bot.example", key="chk1")
+    store.update_lead_fields(lead["id"], data={**(lead.get("data") or {}), "track": "ai_check"})
+    t.inbox = [mail(uid="1", **{"from": "sam@bot.example"}, message_id="<k@x>", body="sure, go ahead")]
+    w.handle_replies()
+    alert = w.alerts.items[-1][1]
+    assert "🔐 They got the free AI security check offer" in alert and "verify every break by hand" in alert

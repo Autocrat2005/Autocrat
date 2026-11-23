@@ -725,18 +725,29 @@ class EmailWorker:
                 "looking at it. takes a minute to read. want me to send them over?")
 
     def draft_followup(self, lead: Dict[str, Any], n: int, opener: str) -> str:
-        templated = self.followup_template(lead, n)
+        ai_check = (lead.get("data") or {}).get("track") == "ai_check"
+        templated = "" if ai_check else self.followup_template(lead, n)
         if templated:
             return templated
         from nexus.integrations.whatsapp_closer import humanize
         voice = getattr(self.closer, "voice", "") or ""
+        if ai_check and (get_secret("AI_CHECK_SAMPLE_URL", "") or "").strip():
+            first = ("#1: they were offered a free quick security check of the AI in their product. Offer to send the "
+                     "short sample report from when we ran the same check on our own AI assistant, so they see exactly "
+                     "what they'd get. Then an easy yes/no question.\n")
+        elif ai_check:
+            first = ("#1: they were offered a free quick security check of the AI in their product. Say in different "
+                     "words what we'd try (getting it to reveal its hidden instructions or another user's data) and "
+                     "that they get the one or two real breaks we find. Then an easy yes/no question.\n")
+        else:
+            first = ("#1: offer to build them a small working demo of ONE concrete thing for their product, free, on "
+                     "their own site or sample data, so they can click around before deciding anything (if the first "
+                     "message already offered a demo, offer a 45 second video of it instead). Then an easy yes/no "
+                     "question.\n")
         system = (
             f"Write follow-up #{n} of 2 from Yash in an email thread. They got the message below and didn't reply.\n"
             "Rules: 1-2 short sentences, lowercase and casual like Yash's voice, no greeting line needed.\n"
-            + ("#1: offer to build them a small working demo of ONE concrete thing for their product, free, on "
-               "their own site or sample data, so they can click around before deciding anything (if the first "
-               "message already offered a demo, offer a 45 second video of it instead). Then an easy yes/no "
-               "question.\n" if n == 1 else
+            + (first if n == 1 else
                "#2: a polite last note that you'll stop here, leave the door open, no guilt, no pressure.\n")
             + "Never repeat the first message, never use placeholders like [name], never use em or en dashes, "
               "never claim clients or results. Return ONLY JSON: {\"draft\": \"...\"}\n\n"
@@ -1212,6 +1223,11 @@ class EmailWorker:
                 outcome = f"DRAFT, not sent (auto-replies are paused):\n{reply}"
                 if re.search(r"\bdemos?\b", f"{text} {reply}", re.I):
                     outcome += f"\n\n🛠️ To build their free demo now, send: demo {lead['id']}"
+                if (lead.get("data") or {}).get("track") == "ai_check" \
+                        and decision.get("intent") not in ("stop", "not_interested"):
+                    outcome += ("\n\n🔐 They got the free AI security check offer. Once they send a link and a "
+                                "written OK, run the check kit: staging 30-50 tries, production 25-30 gentle ones, "
+                                "and verify every break by hand before sending 1-2 of them.")
                 draft_buttons = [[{"text": "📤 Send this reply", "callback_data": f"rs:{lead['id']}"},
                                   {"text": "✋ I'll answer myself", "callback_data": f"rx:{lead['id']}"}]]
             elif reply and not RuntimeControl().killed:

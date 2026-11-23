@@ -187,6 +187,13 @@ def lead_context(lead: Optional[Dict[str, Any]], events: Optional[List[Dict[str,
                      "them or say yes to our offer to share them): " + " | ".join(findings))
     if data.get("demo_url"):
         parts.append(f"their personal demo page (share when they ask for details): {data['demo_url']}")
+    if data.get("track") == "ai_check":
+        what = (data.get("ai_surface") or {}).get("what") or "the AI part of their product"
+        parts.append(f"our first email offered them the free AI security check of {what} (see that offer)")
+        sample = (get_secret("AI_CHECK_SAMPLE_URL", "") or "").strip()
+        if sample:
+            parts.append(f"sample report from the same check on our own AI assistant (share when they want to see "
+                         f"what they'd get): {sample}")
     return "\n".join(parts)
 
 
@@ -227,6 +234,8 @@ def build_system_prompt(voice: str, offers: Dict[str, Any], name: str = "Yash", 
     terms_text = "\n".join(terms)
     feature_price = (f"from ${float(offers.get('feature_usd') or 1500):,.0f} "
                      f"(India: from ₹{float(offers.get('feature_inr') or 45000):,.0f})")
+    report_price = (f"${float(offers.get('ai_report_usd') or 400):,.0f} (for leads in India, say Yash confirms the "
+                    "rupee price)")
     site_line = f"Our site, share it only when they ask who we are or want to see work: {site}" if site else ""
     known = ("What we already know about this person (do not re-ask things answered here):\n" + context) if context \
         else "What we already know about this person comes with the conversation: do not re-ask things answered there."
@@ -292,10 +301,24 @@ Offers (quote these freely when they ask or when you reach E):
   for the scope agreed in writing, about 7 to 10 days, half to start and half when it's live. Quote INR to
   leads in India and USD to everyone else.
 
+- Free AI security check (only for products with an AI part their users talk to, usually offered in our first
+  email): one quick pass of 30 to 50 targeted tries at the failures that hurt a business: getting it to reveal
+  its hidden instructions, leak another user's or the company's private data, or promise things and take actions
+  it shouldn't. It needs a written OK from them and ideally a staging or test link. On a live production app we
+  keep to 25 to 30 gentle tries, one at a time, nothing that changes data or triggers real actions. When they say
+  yes, ask in ONE message for the link to test and a one-line OK in writing ("yes, you can test it"), and say Yash
+  sends what broke within 2 working days. Until results are sent, never claim or hint we tested it or found anything.
+
 After a free demo has been sent (a demo link or video is in the conversation): when they reply with anything but
 a clear no, answer their feedback in one line (changes are quick), then ask for the business in the SAME message:
 what making it live in their product involves, the price, the timeline, half to start, and ONE yes/no question
 ("want me to send the scope so we can start this week?"). Never offer another free thing at that point.
+
+After the security check results have been sent (the breaks we found are in the conversation): answer their
+question in one line, then ask for the business in the SAME message: a "harden and fix" sprint, {feature_price},
+where we add the guardrails, input and output checks and regression tests in their code so those breaks stay
+fixed, about a week, half to start and half when done, and ONE yes/no question. If they only want the paperwork,
+the full written report on its own is {report_price}. Never offer another free thing at that point.
 {terms_text}
 
 Real proof you may cite (true; at most ONE per message, only when it helps, in your own short words, never
@@ -442,6 +465,7 @@ class WhatsAppCloser:
             "mvp_range": (get_secret("MVP_PRICE_RANGE", "") or "").strip(),
             "feature_usd": get_secret("FEATURE_PRICE_USD", "1500") or "1500",
             "feature_inr": get_secret("FEATURE_PRICE_INR", "45000") or "45000",
+            "ai_report_usd": get_secret("AI_REPORT_PRICE_USD", "400") or "400",
             "guarantee": env_bool("DEPOSIT_GUARANTEE", True),
             "care_plan_usd": float(get_secret("CARE_PLAN_USD", "149") or 0),
             "referral_usd": float(get_secret("REFERRAL_REWARD_USD", "150") or 0),
@@ -514,7 +538,7 @@ class WhatsAppCloser:
                 self.offers.get("deposit_link_inr") or "", get_secret("PAYMENT_LINK", "") or "",
                 get_secret("MEETING_LINK", "") or "", (lead or {}).get("url") or "",
                 (lead or {}).get("contact") or "", str(data.get("website") or ""), str(data.get("demo_url") or ""),
-                str(data.get("reply_to") or "")]
+                str(data.get("reply_to") or ""), get_secret("AI_CHECK_SAMPLE_URL", "") or ""]
 
     def decide(self, transcript: str, lead_id: Optional[str] = None, channel: str = "WhatsApp") -> Dict[str, Any]:
         lead = self.store.get_lead(lead_id) if lead_id else None
