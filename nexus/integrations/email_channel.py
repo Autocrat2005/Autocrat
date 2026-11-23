@@ -821,10 +821,13 @@ class EmailWorker:
         return {s: self.rng.betavariate(replied.get(s, 0) + 1, max(0, n - replied.get(s, 0)) + 1) for s, n in sent.items()}
 
     def prioritise(self, queue: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """People hiring a freelancer right now first; everything else (first emails and follow-ups alike) by how
-        often its source actually replies, so a source that works isn't starved by follow-ups to one that doesn't."""
+        """People hiring a freelancer right now first, then first emails, then cold follow-ups; inside each group
+        by how often its source actually replies, so a source that works isn't starved by one that doesn't.
+        First emails beat follow-ups because every reply so far came from a first email (0 from the first 90
+        follow-ups), and a first email about a launch goes stale while it waits. EMAIL_FOLLOWUPS_LAST=0 mixes them."""
         from nexus.integrations.telegram_alerts import is_hiring_post
         scores = self.source_scores()
+        followups_last = env_bool("EMAIL_FOLLOWUPS_LAST", True)
 
         def rank(out: Dict[str, Any]):
             lead = self.store.get_lead(out["lead_id"]) or {}
@@ -838,7 +841,8 @@ class EmailWorker:
             pain = min(3, len((data.get("site_check") or {}).get("findings") or []))
             reviews = str(data.get("reviews") or "").replace(",", "")
             pain += 1 if reviews.isdigit() and int(reviews) >= 30 else 0
-            return (1, -(scores[source] + 0.05 * pain + (0.01 if followup else 0.0)))
+            group = 2 if followup and followups_last else 1
+            return (group, -(scores[source] + 0.05 * pain + (0.01 if followup else 0.0)))
         return sorted(queue, key=rank)
 
     def stage_whatsapp_touch(self, now: Optional[datetime] = None) -> int:

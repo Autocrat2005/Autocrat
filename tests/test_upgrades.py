@@ -214,6 +214,21 @@ def test_freelance_gigs_first_then_whichever_source_replies(store, monkeypatch):
     assert order == [ids["gig"]["id"], ids["founder"]["id"], ids["job"]["id"], ids["broker"]["id"]]
 
 
+def test_first_emails_go_before_cold_follow_ups(store, monkeypatch):
+    """While the daily limit is tight, a fresh first email beats a follow-up, even one from the better source."""
+    w = worker(store)
+    monkeypatch.setattr(w, "source_scores", lambda: {"launch_boards": 0.10, "show_hn": 0.03})
+    ids = {}
+    for key, source, kind in (("bump", "launch_boards", "followup_2"), ("new", "show_hn", "first_touch"),
+                              ("nudge", "launch_boards", "followup_1")):
+        lead, _ = store.upsert_lead(source=source, dedupe_key=key, channel="email", contact=f"{key}@x.example")
+        ids[key] = store.stage_outreach(lead["id"], "email", "subject: hi\nhey", kind=kind)["id"]
+    queue = [store.get_outreach(ids[k]) for k in ("bump", "nudge", "new")]
+    assert [o["id"] for o in w.prioritise(queue)][0] == ids["new"]
+    monkeypatch.setenv("EMAIL_FOLLOWUPS_LAST", "0")
+    assert [o["id"] for o in w.prioritise(queue)][-1] == ids["new"]
+
+
 def test_follow_up_one_offers_what_we_noticed_for_free(store):
     w = worker(store)
     lead, _ = store.upsert_lead(source="x", dedupe_key="f1", channel="email", contact="a@palm.example",
