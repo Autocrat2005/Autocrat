@@ -37,36 +37,12 @@ log = get_logger("core_builder")
 
 # ─── Safety Configuration ────────────────────────────────────────────────────
 
-BLOCKED_IMPORTS = {
-    # Direct dangerous modules
-    "ctypes", "ctypes.wintypes",
-    "winreg", "_winreg",
-}
-
-BLOCKED_FUNCTIONS = {
-    # Functions that should not appear in generated code
-    "os.system", "os.popen", "os.exec", "os.execl", "os.execle",
-    "os.execlp", "os.execlpe", "os.execv", "os.execve", "os.execvp",
-    "os.execvpe", "os.spawn", "os.spawnl", "os.spawnle",
-    "subprocess.call", "subprocess.Popen",
-    "shutil.rmtree", "shutil.move",
-    "eval", "exec", "compile", "__import__",
-    "globals", "locals", "getattr", "setattr", "delattr",
-    "open",  # raw open — plugins should use pathlib or controlled helpers
-}
-
-# Regex patterns that indicate dangerous code
-BLOCKED_PATTERNS = [
-    r"subprocess\.(?:call|Popen|run)\(",  # subprocess invocation
-    r"os\.(?:system|popen|exec|spawn)\(",  # os-level exec
-    r"shutil\.rmtree\(",                   # recursive delete
-    r"(?:^|\s)eval\s*\(",                  # eval call
-    r"(?:^|\s)exec\s*\(",                  # exec call
-    r"__import__\s*\(",                    # dynamic import
-    r"ctypes\.",                           # C-level access
-    r"winreg\.",                           # Windows registry
-    r"socket\.(?:socket|connect|bind|listen)\(",  # raw sockets
-]
+# Safety rules now live in nexus.core.validators.python_plugin (allowlist-based,
+# alias-aware). Re-exported here for backwards compatibility.
+from nexus.core.validators import get_validator
+from nexus.core.validators.python_plugin import (  # noqa: E402
+    BLOCKED_FUNCTIONS, BLOCKED_PATTERNS, SAFE_IMPORTS,
+)
 
 # Network call patterns to detect for dynamic permission prompts
 NETWORK_CALL_PATTERNS = [
@@ -78,18 +54,6 @@ NETWORK_CALL_PATTERNS = [
     r"page\.goto\(",
     r"\.navigate\(",
 ]
-
-# Allowed imports for generated plugins (whitelist approach)
-SAFE_IMPORTS = {
-    "os", "os.path", "sys", "re", "json", "math", "datetime", "time",
-    "pathlib", "collections", "itertools", "functools", "typing",
-    "hashlib", "base64", "uuid", "random", "string", "textwrap",
-    "urllib.parse", "statistics", "dataclasses",
-    "subprocess",  # allowed but subprocess.call/Popen blocked by pattern scan
-    "shutil",      # allowed but shutil.rmtree blocked
-    "requests", "httpx", "bs4", "PIL", "psutil",
-    "nexus.core.plugin", "nexus.core.logger", "nexus.core.config",
-}
 
 # ─── Plugin Template ─────────────────────────────────────────────────────────
 
@@ -145,9 +109,13 @@ self.register_command(
 ```
 
 ## Safety Rules
-- Do NOT use: eval, exec, __import__, os.system, os.popen, ctypes, winreg
-- Do NOT use: subprocess.call, subprocess.Popen (use subprocess.run with capture_output=True)
-- Do NOT use: shutil.rmtree (use pathlib unlink/rmdir for individual items)
+- Do NOT use: eval, exec, __import__, getattr/setattr, os.system, os.popen, os.startfile, ctypes, winreg
+- Do NOT import subprocess, shutil, sys, importlib, socket or pickle (they are rejected by the validator)
+- Do NOT delete, kill or chmod anything (os.remove, Path.unlink, .rmdir, .kill are rejected)
+- Do NOT read environment variables or secrets (os.environ / os.getenv are rejected)
+- Allowed imports: os, os.path, re, json, math, datetime, time, pathlib, collections, itertools,
+  functools, typing, hashlib, base64, uuid, random, string, textwrap, urllib.parse, statistics,
+  dataclasses, decimal, fractions, requests, httpx, bs4, PIL, psutil
 - Do NOT use: raw `open()` — use `pathlib.Path.read_text()` / `write_text()` etc.
 - All file operations MUST be scoped — no arbitrary path deletion
 - Handle ALL exceptions gracefully in try/except blocks
@@ -348,125 +316,15 @@ class CoreBuilderPlugin(NexusPlugin):
 
     def _validate_syntax(self, source: str) -> Tuple[bool, str]:
         """Parse source with ast.parse — returns (ok, error_msg)."""
-        try:
-            ast.parse(source)
-            return True, ""
-        except SyntaxError as e:
-            return False, f"Syntax error at line {e.lineno}: {e.msg}"
+        return get_validator("python").validate_syntax(source)
 
     def _scan_safety(self, source: str) -> Tuple[bool, List[str]]:
-        """
-        Scan source code for unsafe patterns.
-        Returns (is_safe, list_of_violations).
-        """
-        violations = []
-
-        # ── Regex pattern scan ──
-        for pattern in BLOCKED_PATTERNS:
-            matches = re.findall(pattern, source, re.MULTILINE)
-            if matches:
-                violations.append(f"Blocked pattern: {pattern} (found {len(matches)}x)")
-
-        # ── AST-based import scan ──
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            violations.append("Cannot AST-parse for safety scan (syntax errors)")
-            return False, violations
-
-        for node in ast.walk(tree):
-            # Check import statements
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name in BLOCKED_IMPORTS:
-                        violations.append(f"Blocked import: {alias.name}")
-            elif isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                if module in BLOCKED_IMPORTS:
-                    violations.append(f"Blocked import: from {module}")
-                # Check for from X import dangerous_func
-                for alias in (node.names or []):
-                    full = f"{module}.{alias.name}"
-                    if full in BLOCKED_FUNCTIONS:
-                        violations.append(f"Blocked function import: {full}")
-
-            # Check for dangerous function calls
-            elif isinstance(node, ast.Call):
-                func_name = self._get_call_name(node)
-                if func_name in BLOCKED_FUNCTIONS:
-                    violations.append(f"Blocked function call: {func_name}()")
-
-        return len(violations) == 0, violations
-
-    def _get_call_name(self, node: ast.Call) -> str:
-        """Extract the dotted name of a function call from AST."""
-        if isinstance(node.func, ast.Name):
-            return node.func.id
-        elif isinstance(node.func, ast.Attribute):
-            parts = []
-            current = node.func
-            while isinstance(current, ast.Attribute):
-                parts.append(current.attr)
-                current = current.value
-            if isinstance(current, ast.Name):
-                parts.append(current.id)
-            return ".".join(reversed(parts))
-        return ""
+        """Allowlist + alias-aware safety scan — returns (is_safe, violations)."""
+        return get_validator("python").scan_safety(source)
 
     def _validate_plugin_structure(self, source: str) -> Tuple[bool, str]:
         """Ensure the source contains a valid NexusPlugin subclass."""
-        try:
-            tree = ast.parse(source)
-        except SyntaxError as e:
-            return False, f"Syntax error: {e}"
-
-        has_nexus_import = False
-        has_plugin_class = False
-        has_setup = False
-        has_register = False
-
-        for node in ast.walk(tree):
-            # Check for NexusPlugin import
-            if isinstance(node, ast.ImportFrom):
-                if node.module and "nexus.core.plugin" in node.module:
-                    for alias in (node.names or []):
-                        if alias.name == "NexusPlugin":
-                            has_nexus_import = True
-
-            # Check for class that inherits NexusPlugin
-            if isinstance(node, ast.ClassDef):
-                for base in node.bases:
-                    base_name = ""
-                    if isinstance(base, ast.Name):
-                        base_name = base.id
-                    elif isinstance(base, ast.Attribute):
-                        base_name = base.attr
-                    if base_name == "NexusPlugin":
-                        has_plugin_class = True
-                        # Check for setup method
-                        for item in node.body:
-                            if isinstance(item, ast.FunctionDef) and item.name == "setup":
-                                has_setup = True
-                                # Check for register_command call inside setup
-                                for sub in ast.walk(item):
-                                    if isinstance(sub, ast.Call):
-                                        call_name = self._get_call_name(sub)
-                                        if "register_command" in call_name:
-                                            has_register = True
-
-        issues = []
-        if not has_nexus_import:
-            issues.append("Missing 'from nexus.core.plugin import NexusPlugin'")
-        if not has_plugin_class:
-            issues.append("No class inheriting from NexusPlugin found")
-        if not has_setup:
-            issues.append("Missing setup() method")
-        if not has_register:
-            issues.append("No register_command() calls found in setup()")
-
-        if issues:
-            return False, "; ".join(issues)
-        return True, ""
+        return get_validator("python").validate_structure(source)
 
     def _scan_network_urls(self, source: str) -> List[str]:
         """
@@ -613,22 +471,8 @@ class CoreBuilderPlugin(NexusPlugin):
 
     def _full_validate(self, source: str) -> Tuple[bool, str]:
         """Run all validation passes. Returns (ok, combined_error)."""
-        # 1. Syntax
-        ok, err = self._validate_syntax(source)
-        if not ok:
-            return False, f"[SYNTAX] {err}"
-
-        # 2. Safety
-        safe, violations = self._scan_safety(source)
-        if not safe:
-            return False, f"[SAFETY] {'; '.join(violations)}"
-
-        # 3. Structure
-        ok, err = self._validate_plugin_structure(source)
-        if not ok:
-            return False, f"[STRUCTURE] {err}"
-
-        return True, ""
+        result = get_validator("python").validate(source)
+        return result.ok, result.message
 
     # ─── Code Assembly ────────────────────────────────────────────────────────
 

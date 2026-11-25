@@ -46,3 +46,24 @@ nexus/plugins/generated/gen_*.py
 
 # Workflow outputs (user-generated at runtime)
 workflows/*.yaml
+# ── Secrets (never commit) ──
+.env
+.env.*
+!.env.example
+
+# ── Runtime state ──
+*.db-wal
+*.db-shm
+.autocrat/
+
+# ── Trading workspace lives in ../autocrat-trading-workspace (keep it out of this public repo) ──
+*.npz
+data/
+mt5_*.py
+backtest.py
+fetch_data.py
+research*.py
+strategies_*.py
+
+# ── Test / tooling caches ──
+.pytest_cache/

@@ -6,7 +6,9 @@ server:
   host: 127.0.0.1
   port: 9000
   cors_origins:
-  - '*'
+  - http://localhost:9000
+  - http://127.0.0.1:9000
+  - http://localhost:5173
 plugins:
   enabled:
   - window_manager
@@ -26,13 +28,13 @@ plugins:
   - intelligence
   - comet_web_agent
   - core_builder
+  - pipeline
   settings: {}
 scheduler:
   jobs: []
 workflows:
   directory: workflows
 ai:
-  gemini_api_key: ''
   gemini_enabled: false
   llm_backend: local_ollama
   local_model: qwen2.5-coder:3b
@@ -76,11 +78,7 @@ safety:
     - submit
     react_mock_navigation_in_safe_mode: false
 settings: {}
-auth:
-  token: 1MG04T@yash
-telegram:
-  bot_token: ''
-  allowed_chat_ids: []
+# Telegram bot token + allowed user IDs now live in .env (TELEGRAM_*)
 heartbeat:
   enabled: true
   tasks:

@@ -1,0 +1,20 @@
+[Unit]
+Description=Autocrat core (pipeline, workers, alerts, /ws/v2)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__REPO_DIR__
+Environment=PYTHONUNBUFFERED=1
+Environment=AUTOCRAT_PROFILE=core
+ExecStart=__REPO_DIR__/.venv/bin/python main.py --core --host 127.0.0.1 --port 9000
+Restart=always
+RestartSec=10
+# Kill-switch state survives restarts (stored in the SQLite store).
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -24,7 +24,7 @@ class ProcessControllerPlugin(NexusPlugin):
         self.register_command("list", self.list_processes,
                               "List top processes by CPU/memory", "list processes", ["ps", "processes"])
         self.register_command("kill", self.kill_process,
-                              "Kill a process by name or PID", "kill <name|pid>", ["stop", "end"])
+                              "Kill a process by name or PID", "kill <name|pid>", ["stop", "end"], side_effect="destructive")
         self.register_command("start", self.start_process,
                               "Launch an executable", "start <path>", ["launch", "run process"])
         self.register_command("monitor", self.monitor_process,

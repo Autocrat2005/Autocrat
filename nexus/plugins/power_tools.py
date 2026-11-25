@@ -34,15 +34,15 @@ class PowerToolsPlugin(NexusPlugin):
 
         # Power
         self.register_command("shutdown", self.shutdown,
-                              "Shutdown PC", "shutdown [delay_seconds]")
+                              "Shutdown PC", "shutdown [delay_seconds]", side_effect="destructive")
         self.register_command("restart", self.restart,
-                              "Restart PC", "restart")
+                              "Restart PC", "restart", side_effect="destructive")
         self.register_command("sleep", self.sleep_pc,
-                              "Put PC to sleep", "sleep")
+                              "Put PC to sleep", "sleep", side_effect="destructive")
         self.register_command("hibernate", self.hibernate,
-                              "Hibernate PC", "hibernate")
+                              "Hibernate PC", "hibernate", side_effect="destructive")
         self.register_command("logoff", self.logoff,
-                              "Log out current user", "logoff")
+                              "Log out current user", "logoff", side_effect="destructive")
         self.register_command("cancel_shutdown", self.cancel_shutdown,
                               "Cancel scheduled shutdown", "cancel shutdown")
 
@@ -54,7 +54,7 @@ class PowerToolsPlugin(NexusPlugin):
         self.register_command("note_read", self.note_read,
                               "Read a note by number", "note read <number>")
         self.register_command("note_delete", self.note_delete,
-                              "Delete a note", "note delete <number>")
+                              "Delete a note", "note delete <number>", side_effect="destructive")
 
         # Timer
         self.register_command("timer", self.set_timer,
@@ -72,7 +72,7 @@ class PowerToolsPlugin(NexusPlugin):
         self.register_command("pin_window", self.pin_window,
                               "Keep current window always on top", "pin window")
         self.register_command("empty_recycle", self.empty_recycle,
-                              "Empty the recycle bin", "empty recycle bin")
+                              "Empty the recycle bin", "empty recycle bin", side_effect="destructive")
         self.register_command("open_fav", self.open_favorite,
                               "Open a favorite app", "open <app_name>")
 

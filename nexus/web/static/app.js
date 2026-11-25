@@ -19,6 +19,8 @@
     let mediaRecorder = null;
     let recordingChunks = [];
     const API = window.location.origin;
+    // History, brain and bus endpoints require the token (they expose lead data).
+    const authHeaders = () => (authToken ? { "Authorization": `Bearer ${authToken}` } : {});
     const WS_PROTO = window.location.protocol === "https:" ? "wss:" : "ws:";
 
     // ─── DOM Elements ────────────────────────────────────────────
@@ -578,7 +580,7 @@
         try {
             const fetches = [fetch(`${API}/api/system`)];
             // Try brain endpoint too
-            fetches.push(fetch(`${API}/api/brain`).catch(() => null));
+            fetches.push(fetch(`${API}/api/brain`, { headers: authHeaders() }).catch(() => null));
             const [sysRes, brainRes] = await Promise.all(fetches);
             const data = await sysRes.json();
 
@@ -829,7 +831,7 @@
     // ─── History Tab ─────────────────────────────────────────────
     async function loadHistory() {
         try {
-            const res = await fetch(`${API}/api/history`);
+            const res = await fetch(`${API}/api/history`, { headers: authHeaders() });
             const data = await res.json();
 
             const container = $("#history-list");

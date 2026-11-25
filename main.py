@@ -4,10 +4,14 @@ Initializes the engine, loads plugins, starts the web server.
 Now with: Message Bus, Telegram Bot, Heartbeat, Cross-Channel routing.
 
 Usage:
-    python main.py          → Start web server + CLI
+    python main.py          → Start web server + CLI (profile from AUTOCRAT_PROFILE, default full)
+    python main.py --core   → Always-on core only: pipeline + revenue plugins, web server, no CLI,
+                              no desktop plugins. Same command on the laptop (dev) and the Oracle VM.
     python main.py --cli    → CLI only (no web server)
     python main.py --web    → Web server only (no CLI)
-    python main.py --tunnel → Expose via ngrok tunnel
+    python main.py --tunnel → Expose via ngrok tunnel (avoid: exposes the control plane)
+
+Secrets come from .env (see .env.example). RUN_MODE defaults to dry_run.
 """
 
 import sys
@@ -19,10 +23,14 @@ import uvicorn
 # Ensure project root is in path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from nexus.core.secrets import get_secret, load_env
+
+# .env wins over stale machine-wide vars (e.g. another tool's ANTHROPIC_API_KEY)
+load_env(override=True)
+
 from nexus.core.engine import NexusEngine
 from nexus.core.config import Config
 from nexus.core.message_bus import MessageBus
-from nexus.core.heartbeat import Heartbeat
 from nexus.core.logger import get_logger
 
 log = get_logger("main")
@@ -41,11 +49,23 @@ BANNER = """
 
 
 def main():
+    # Windows uses cp1252 for redirected stdout; the banner/emoji would crash a
+    # service or log-file run. Force UTF-8 with replacement instead.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(description="Autocrat — AI-Powered Desktop Automation OS")
     parser.add_argument("--cli", action="store_true", help="CLI only mode (no web server)")
     parser.add_argument("--web", action="store_true", help="Web server only (no CLI)")
     parser.add_argument("--tunnel", action="store_true", help="Expose via ngrok tunnel (access from phone anywhere)")
-    parser.add_argument("--host", default="0.0.0.0", help="Web server host (default: 0.0.0.0 — accessible from LAN/phone)")
+    parser.add_argument("--core", action="store_true",
+                        help="Run the always-on core (profile=core, web only, no desktop plugins)")
+    parser.add_argument("--profile", choices=["core", "desk", "full"], default=None,
+                        help="Plugin profile (default: AUTOCRAT_PROFILE or full)")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Web server host (default: 127.0.0.1; put Caddy/Cloudflare in front for remote access)")
     parser.add_argument("--port", type=int, default=9000, help="Web server port (default: 9000)")
     parser.add_argument("--no-telegram", action="store_true", help="Disable Telegram bot even if configured")
     parser.add_argument("--no-heartbeat", action="store_true", help="Disable heartbeat system")
@@ -53,9 +73,23 @@ def main():
 
     print(BANNER)
 
+    profile = "core" if args.core else args.profile
+    if profile:
+        os.environ["AUTOCRAT_PROFILE"] = profile
+    if profile == "core":
+        args.web = True
+        os.environ.setdefault("AUTOCRAT_BRAIN", "0")  # the core doesn't need the desktop intent model
+        args.no_heartbeat = True  # built-in heartbeat tasks probe the Windows desktop
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        log.warning(f"Binding to {args.host} exposes the control plane beyond this machine")
+
     # ── Initialize engine ──
     engine = NexusEngine()
-    engine.load_all_plugins()
+    engine.load_all_plugins(profile=profile)
+    _ = engine.store  # open the WAL store and restore a persisted kill switch
+    engine.start_workers()
+    log.info(f"Run mode: {engine.runtime.run_mode} · kill switch: "
+             f"{'ENGAGED' if engine.runtime.killed else 'off'} · profile: {engine.profile}")
 
     # Connect scheduler & workflow to engine
     if "task_scheduler" in engine.plugins:
@@ -87,26 +121,74 @@ def main():
 
     # ── Initialize Telegram Bot ──
     telegram_bot = None
-    tg_cfg = cfg.get("telegram", {})
-    if tg_cfg.get("bot_token") and not args.no_telegram:
+    tg_token = get_secret("TELEGRAM_BOT_TOKEN")
+    if tg_token and not args.no_telegram:
         try:
             from nexus.integrations.telegram_bot import TelegramBot
-            telegram_bot = TelegramBot(
-                bot_token=tg_cfg["bot_token"],
-                allowed_chat_ids=tg_cfg.get("allowed_chat_ids", []),
-                message_bus=bus,
-            )
+            telegram_bot = TelegramBot(bot_token=tg_token, message_bus=bus, store=engine.store)
             telegram_bot.start()
             log.info("🤖 Telegram bot started")
         except Exception as e:
             log.warning(f"Telegram bot failed to start: {e}")
     else:
-        log.info("📱 Telegram not configured (add telegram.bot_token to nexus_config.yaml)")
+        log.info("📱 Telegram not configured (set TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_USER_IDS in .env)")
+
+    # ── WhatsApp Web: alerts (founders' own numbers/group) + inbound closer ──
+    # Both share ONE logged-in WhatsApp Web session on one thread.
+    wa_alerts = None
+    from nexus.core.secrets import env_bool
+    alerts_on = env_bool("WHATSAPP_ALERTS_ENABLED", False)
+    closer_on = env_bool("WHATSAPP_CLOSER_ENABLED", False)
+    if alerts_on or closer_on:
+        try:
+            from nexus.integrations.whatsapp_alerts import WhatsAppAlertNotifier
+            wa_alerts = WhatsAppAlertNotifier(store=engine.store)
+            if alerts_on:
+                wa_alerts.attach()
+            if closer_on:
+                from nexus.integrations.whatsapp_closer import WhatsAppCloser
+                WhatsAppCloser(wa_alerts, store=engine.store).attach()
+                log.info(f"💬 WhatsApp closer on ({engine.runtime.run_mode}: "
+                         f"{'drafts only' if engine.runtime.is_dry_run else 'SENDING'})")
+            wa_alerts.start()
+            engine.wa_alerts = wa_alerts   # the deck can address the group directly
+        except Exception as e:
+            log.warning(f"WhatsApp alerts/closer failed to start: {e}")
+
+    # ── Email channel: openers + AI replies (same closer brain + playbook) ──
+    if env_bool("EMAIL_ENABLED", False):
+        try:
+            from nexus.integrations.email_channel import AlertFanout, EmailWorker
+            from nexus.integrations.whatsapp_closer import WhatsAppCloser
+            fanout = AlertFanout([telegram_bot, wa_alerts if alerts_on else None])
+            brain = WhatsAppCloser(fanout, store=engine.store)
+            EmailWorker(engine.store, brain, fanout).start()
+        except Exception as e:
+            log.warning(f"Email channel failed to start: {e}")
+
+    # ── WhatsApp via Meta's Cloud API: answers people who message us first (free 24h window) ──
+    if env_bool("WHATSAPP_CLOUD_ENABLED", False):
+        try:
+            from nexus.integrations.email_channel import AlertFanout
+            from nexus.integrations.whatsapp_closer import WhatsAppCloser
+            from nexus.integrations.whatsapp_cloud import WhatsAppCloud
+            from nexus.web import server as web_server
+            wa_fanout = AlertFanout([telegram_bot])
+            wa_cloud = WhatsAppCloud(engine.store, WhatsAppCloser(wa_fanout, store=engine.store), wa_fanout)
+            if wa_cloud.configured:
+                web_server.set_whatsapp_cloud(wa_cloud)
+                log.info("📲 WhatsApp Cloud API closer on: webhook at /webhooks/whatsapp")
+            else:
+                log.warning("WhatsApp Cloud API: set WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN, "
+                            "WHATSAPP_APP_SECRET and WHATSAPP_VERIFY_TOKEN in .env")
+        except Exception as e:
+            log.warning(f"WhatsApp Cloud API failed to start: {e}")
 
     # ── Initialize Heartbeat ──
     heartbeat = None
     hb_cfg = cfg.get("heartbeat", {})
     if hb_cfg.get("enabled", True) and not args.no_heartbeat:
+        from nexus.core.heartbeat import Heartbeat  # lazy: the core profile doesn't need it
         heartbeat = Heartbeat(message_bus=bus, engine=engine)
         hb_tasks = hb_cfg.get("tasks", [])
         if hb_tasks:
@@ -185,6 +267,8 @@ def run_web(engine, host, port, bus=None, heartbeat=None):
         access_log=False,
     )
     server = uvicorn.Server(config)
+    shown = "127.0.0.1" if host in ("0.0.0.0", "") else host
+    log.info(f"🛰️ Command deck: http://{shown}:{port}/hud (token: AUTOCRAT_AUTH_TOKEN in .env)")
     server.run()
 
 

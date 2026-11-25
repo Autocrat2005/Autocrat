@@ -21,6 +21,11 @@ from nexus.core.brain import NexusBrain
 from nexus.core.learner import BehaviorLearner
 from nexus.core.ai_engine import GeminiEngine
 from nexus.core.personality import Personality
+from nexus.core.runtime import RuntimeControl, REQUIRES_APPROVAL
+from nexus.core.secrets import env_bool
+from nexus.core import plugin_loader
+from nexus.core.context import acting_as, current_actor
+import contextvars
 
 log = get_logger("engine")
 
@@ -77,10 +82,54 @@ class NexusEngine:
             use_native_tools=use_native_tools,
         )
 
-        # Load brain model in background thread (takes a few seconds)
-        threading.Thread(target=self.brain.initialize, daemon=True).start()
+        # Run mode + kill switch. Kill switch stops every worker.
+        self.runtime = RuntimeControl()
+        self.runtime.on_kill(self.stop_workers)
+        self.profile = plugin_loader.current_profile()
+        self._store = None
+        self._workers_started = False
+        self._brain_started = False
+        _ = self.store  # open the store now so kill-switch state is restored and persisted
 
         log.info("NEXUS Engine initialized")
+
+    # ─── Store / brain / workers ──────────────────────────────────────────────
+
+    @property
+    def store(self):
+        """Lazily open the WAL store (also restores a persisted kill switch)."""
+        if self._store is None:
+            from nexus.core.store import get_store
+            self._store = get_store()
+            self.runtime.attach_store(self._store)
+        return self._store
+
+    def start_brain(self):
+        """Load the ML intent brain in the background (after plugins add their phrases)."""
+        if self._brain_started or not env_bool("AUTOCRAT_BRAIN", True):
+            return
+        self._brain_started = True
+        threading.Thread(target=self.brain.initialize, daemon=True).start()
+
+    def start_workers(self):
+        """Start long-running plugin workers (no-op for plain command plugins)."""
+        if self.runtime.killed:
+            log.warning("Kill switch engaged — workers not started")
+            return
+        for plugin in self.plugins.values():
+            try:
+                plugin.start()
+            except Exception as e:
+                log.error(f"Worker start failed for {plugin.name}: {e}")
+        self._workers_started = True
+
+    def stop_workers(self):
+        for plugin in self.plugins.values():
+            try:
+                plugin.stop()
+            except Exception as e:
+                log.error(f"Worker stop failed for {plugin.name}: {e}")
+        self._workers_started = False
 
     def load_plugin(self, plugin: NexusPlugin):
         """Register a plugin instance."""
@@ -95,44 +144,28 @@ class NexusEngine:
             log.info(f"Plugin unloaded: {name}")
             self.events.emit("plugin.unloaded", {"name": name})
 
-    def load_all_plugins(self):
-        """Auto-load all built-in plugins."""
-        plugin_modules = [
-            ("nexus.plugins.window_manager", "WindowManagerPlugin"),
-            ("nexus.plugins.process_controller", "ProcessControllerPlugin"),
-            ("nexus.plugins.file_ops", "FileOpsPlugin"),
-            ("nexus.plugins.keyboard_mouse", "KeyboardMousePlugin"),
-            ("nexus.plugins.screen_intel", "ScreenIntelPlugin"),
-            ("nexus.plugins.app_launcher", "AppLauncherPlugin"),
-            ("nexus.plugins.clipboard", "ClipboardPlugin"),
-            ("nexus.plugins.system_info", "SystemInfoPlugin"),
-            ("nexus.plugins.volume_display", "VolumeDisplayPlugin"),
-            ("nexus.plugins.shell_executor", "ShellExecutorPlugin"),
-            ("nexus.plugins.task_scheduler", "TaskSchedulerPlugin"),
-            ("nexus.plugins.workflow_engine", "WorkflowEnginePlugin"),
-            ("nexus.plugins.smart_actions", "SmartActionsPlugin"),
-            ("nexus.plugins.power_tools", "PowerToolsPlugin"),
-            ("nexus.plugins.intelligence", "IntelligencePlugin"),
-            ("nexus.plugins.comet_web_agent", "CometWebAgentPlugin"),
-            ("nexus.plugins.core_builder", "CoreBuilderPlugin"),
-        ]
+    def load_all_plugins(self, profile: Optional[str] = None):
+        """Discover and load built-in + external plugins for this profile.
 
+        Built-ins come from nexus/plugins; external ones from AUTOCRAT_PLUGIN_PATHS
+        (e.g. the private ../autocrat-revenue-plugins repo). `plugins.enabled` in
+        config filters built-ins; `plugins.disabled` filters anything.
+        """
+        self.profile = profile or plugin_loader.current_profile()
         enabled = self.config.get("plugins", "enabled") or []
+        disabled = self.config.get("plugins", "disabled") or []
+        specs = plugin_loader.discover(profile=self.profile, enabled_builtins=enabled, disabled=disabled)
 
-        for module_path, class_name in plugin_modules:
-            plugin_name = module_path.split(".")[-1]
-            if enabled and plugin_name not in enabled:
-                log.debug(f"Skipping disabled plugin: {plugin_name}")
-                continue
+        for spec in specs:
             try:
-                module = importlib.import_module(module_path)
-                plugin_class = getattr(module, class_name)
+                plugin_class = plugin_loader.import_plugin_class(spec)
                 plugin = plugin_class()
+                plugin._origin = spec.origin
                 self.load_plugin(plugin)
             except Exception as e:
-                log.warning(f"Failed to load plugin {plugin_name}: {e}")
+                log.warning(f"Failed to load plugin {spec.plugin_name} ({spec.origin}): {e}")
 
-        log.info(f"Loaded {len(self.plugins)} plugins with "
+        log.info(f"Loaded {len(self.plugins)} plugins (profile={self.profile}) with "
                  f"{sum(len(p.get_commands()) for p in self.plugins.values())} total commands")
 
         # Inject engine reference into all plugins (needed by core_builder for hot-loading)
@@ -147,10 +180,47 @@ class NexusEngine:
             except Exception as e:
                 log.warning(f"Auto-load generated plugins failed: {e}")
 
-        # Feed available commands to Gemini for dynamic understanding
-        self.gemini.update_commands(self.get_all_commands())
+        self._register_contributed_routing()
 
-    def execute(self, text: str) -> Dict[str, Any]:
+        # Feed available commands to the LLM for dynamic understanding
+        self.gemini.update_commands(self.get_all_commands())
+        self.start_brain()
+
+    def _register_contributed_routing(self):
+        """Feed plugin-declared regex patterns and example phrases into the router."""
+        intents = []
+        for plugin in self.plugins.values():
+            for cmd in plugin.get_command_defs():
+                for pattern in cmd.patterns:
+                    try:
+                        self.parser.add_pattern(pattern, plugin.name, cmd.name)
+                    except Exception as e:
+                        log.warning(f"Bad pattern for {plugin.name}.{cmd.name}: {e}")
+                if cmd.phrases:
+                    intents.append({
+                        "intent": f"{plugin.name}__{cmd.name}",
+                        "phrases": list(cmd.phrases),
+                        "action": f"{plugin.name}.{cmd.name}",
+                    })
+        if intents:
+            added = self.brain.add_intents(intents)
+            log.info(f"Router: {added} plugin-contributed intents registered")
+
+    def _command_def(self, plugin_name: str, action: str):
+        plugin = self.plugins.get(plugin_name)
+        return plugin.get_command(action) if plugin else None
+
+    def _canonical_action(self, parsed: ParsedCommand) -> str:
+        """plugin.command with aliases resolved, so gates can't be bypassed by an alias."""
+        cmd = self._command_def(parsed.plugin, parsed.action)
+        return f"{parsed.plugin}.{cmd.name if cmd else parsed.action}"
+
+    def execute(self, text: str, actor: str = "local") -> Dict[str, Any]:
+        """Run a command as `actor` (recorded in the audit log for approvals)."""
+        with acting_as(actor):
+            return self._execute(text, actor)
+
+    def _execute(self, text: str, actor: str = "local") -> Dict[str, Any]:
         """
         5-stage intelligent command pipeline:
           0. Preprocessing — pronoun resolution, context injection
@@ -187,7 +257,7 @@ class NexusEngine:
         text = self._resolve_context(text)
 
         # Handle approval / rejection commands
-        approval_result = self._handle_confirmation_command(text, timestamp)
+        approval_result = self._handle_confirmation_command(text, timestamp, actor=actor)
         if approval_result is not None:
             return approval_result
 
@@ -336,7 +406,7 @@ class NexusEngine:
             log.info(f"⚡ Running {len(parsed_commands)} independent steps in parallel")
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(parsed_commands), 4)) as pool:
                 future_map = {
-                    pool.submit(self._execute_plugin_command, parsed): i
+                    pool.submit(contextvars.copy_context().run, self._execute_plugin_command, parsed): i
                     for i, parsed in enumerate(parsed_commands)
                 }
                 indexed_results = [None] * len(parsed_commands)
@@ -531,7 +601,15 @@ class NexusEngine:
             if "query" in args and args["query"] and plugin not in ("_meta",):
                 self._context["query"] = str(args["query"])
 
-    def _handle_confirmation_command(self, text: str, timestamp: str) -> Optional[Dict[str, Any]]:
+    def _audit(self, actor: str, action: str, detail: Dict[str, Any]):
+        try:
+            self.store.audit(actor, action, detail)
+        except Exception as e:
+            log.warning(f"Audit log write failed: {e}")
+        self.events.emit("audit", {"actor": actor, "action": action, **detail})
+
+    def _handle_confirmation_command(self, text: str, timestamp: str,
+                                     actor: str = "local") -> Optional[Dict[str, Any]]:
         """Handle approve/reject commands for pending confirmations."""
         approve_match = re.match(r"^\s*(?:approve|confirm|yes)\s+([A-Za-z0-9_-]{6,})\s*$", text, re.IGNORECASE)
         reject_match = re.match(r"^\s*(?:reject|deny|cancel|no)\s+([A-Za-z0-9_-]{6,})\s*$", text, re.IGNORECASE)
@@ -546,6 +624,7 @@ class NexusEngine:
                     "timestamp": timestamp,
                     "duration_ms": 0,
                 }
+            self._audit(actor, "reject", {"confirmation_id": token, "command": pending.get("text", "")})
             return {
                 "success": False,
                 "result": f"Rejected pending command: {pending.get('text', '')}",
@@ -566,6 +645,8 @@ class NexusEngine:
                 }
 
             parsed_commands = pending.get("parsed_commands", [])
+            self._audit(actor, "approve", {"confirmation_id": token, "command": pending.get("text", ""),
+                                           "reasons": pending.get("reasons", [])})
             blocked = self._get_blocked_actions(parsed_commands)
             if blocked:
                 return {
@@ -658,11 +739,23 @@ class NexusEngine:
 
     def _requires_confirmation(self, parsed_commands: List[ParsedCommand]) -> tuple[bool, List[str]]:
         """Detect destructive/sensitive actions requiring approval."""
-        if not bool(self.config.get("safety", "confirm_destructive", default=True)):
-            return False, []
-
         reasons = []
+        # Outbound and money actions — and anything that re-arms them — ALWAYS need
+        # approval. No config switch disables this block.
+        for parsed in parsed_commands:
+            if parsed.plugin == "_meta":
+                if parsed.action == "run_mode" and str(parsed.args.get("mode", "")).lower() == "live":
+                    reasons.append("switching RUN_MODE to live")
+                elif parsed.action == "release_kill_switch":
+                    reasons.append("releasing the kill switch")
+                continue
+            cmd = self._command_def(parsed.plugin, parsed.action)
+            if cmd and cmd.side_effect in ("external", "financial"):
+                reasons.append(f"{cmd.side_effect} action: {self._canonical_action(parsed)}")
+        if not bool(self.config.get("safety", "confirm_destructive", default=True)):
+            return (len(reasons) > 0), reasons
 
+        # Legacy safety net; the primary source is each command's side_effect label.
         destructive_actions = {
             "power_tools.shutdown",
             "power_tools.restart",
@@ -676,8 +769,18 @@ class NexusEngine:
         sensitive_keywords = {"delete", "drop", "kill", "shutdown", "format", "wipe", "remove"}
 
         for parsed in parsed_commands:
-            action_name = f"{parsed.plugin}.{parsed.action}"
+            action_name = self._canonical_action(parsed)
             arg_text = " ".join(str(v) for v in (parsed.args or {}).values()).lower()
+
+            if parsed.plugin == "_meta":
+                continue  # handled above
+
+            cmd = self._command_def(parsed.plugin, parsed.action)
+            if cmd and cmd.side_effect in ("external", "financial"):
+                continue  # already added above
+            if cmd and cmd.side_effect in REQUIRES_APPROVAL:
+                reasons.append(f"{cmd.side_effect} action: {action_name}")
+                continue
 
             if action_name in destructive_actions:
                 reasons.append(f"destructive action: {action_name}")
@@ -694,7 +797,7 @@ class NexusEngine:
         blocked_set = {str(item).strip().lower() for item in configured if str(item).strip()}
         blocked = []
         for parsed in parsed_commands:
-            action_name = f"{parsed.plugin}.{parsed.action}".lower()
+            action_name = self._canonical_action(parsed).lower()
             if action_name in blocked_set:
                 blocked.append(action_name)
         return blocked
@@ -762,6 +865,25 @@ class NexusEngine:
                 "control_plane": True,
             }
 
+        if action == "kill_switch":
+            self.runtime.engage_kill_switch(reason=parsed.args.get("reason", "manual"),
+                                            actor=current_actor())
+            return {"success": True, "result": "🛑 Kill switch engaged — outbound, financial and "
+                                               "destructive actions blocked; workers stopped.",
+                    "control_plane": True, **self.runtime.status()}
+
+        if action == "release_kill_switch":
+            self.runtime.release_kill_switch(actor=current_actor())
+            return {"success": True, "result": "Kill switch released (workers not auto-restarted).",
+                    "control_plane": True, **self.runtime.status()}
+
+        if action == "run_mode":
+            mode = str(parsed.args.get("mode") or "").replace(" ", "_")
+            if mode:
+                self.runtime.set_run_mode(mode, actor=current_actor())
+            return {"success": True, "result": f"RUN_MODE = {self.runtime.run_mode}",
+                    "control_plane": True, **self.runtime.status()}
+
         if action == "help":
             lines = [
                 "╔══════════════════════════════════════════╗",
@@ -813,6 +935,8 @@ class NexusEngine:
                     "ai_brain": "active (ML)" if self.brain._ready else "fallback (keyword)",
                     "llm_backend": ai_stats.get("llm_backend", "none"),
                     "llm_status": "active" if ai_stats.get("llm_active") else "heuristic-only",
+                    "profile": self.profile,
+                    **self.runtime.status(),
                     **brain_stats,
                     **ai_stats,
                 },
