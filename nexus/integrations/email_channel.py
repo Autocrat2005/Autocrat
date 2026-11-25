@@ -139,6 +139,18 @@ def is_bounce_sender(addr: str) -> bool:
     return any(local.startswith(b) for b in BOUNCE_SENDERS)
 
 
+def is_delay_notice(mail: Dict[str, Any]) -> bool:
+    """A 'still trying to deliver' warning, not a failure. The server retries for days and a real failure arrives
+    as its own report, so counting a delay as a bounce wrongly holds the sending limit down."""
+    dsn = str(mail.get("dsn") or "")
+    if re.search(r"^\s*action:\s*failed", dsn, re.I | re.M):
+        return False
+    if re.search(r"^\s*action:\s*delayed", dsn, re.I | re.M):
+        return True
+    subject = str(mail.get("subject") or "")
+    return bool(re.search(r"\bdelay", subject, re.I)) and not re.search(r"fail|undeliver|returned|rejected", subject, re.I)
+
+
 def compute_cap(store, base: int, cap_max: int = 60, step: int = 3,
             now_ts: Optional[float] = None) -> Dict[str, Any]:
     """Today's cap: base + step per clean sending day (last 14), back to base if bounces spike."""
@@ -1060,6 +1072,7 @@ class EmailWorker:
         own = (getattr(self.transport, "address", "") or "").lower()
         ours = getattr(self.transport, "addresses", None) or {own}
         text = f"{mail.get('dsn', '')}\n{mail.get('body', '')}"
+        delay = is_delay_notice(mail)
         for addr in dict.fromkeys(a.lower().strip(".") for a in EMAIL_RE.findall(text)):
             if addr in ours or is_bounce_sender(addr):
                 continue
@@ -1067,6 +1080,12 @@ class EmailWorker:
             lead = self.store.find_lead_by_contact(key)
             if not lead or not any(o["status"] == "sent" for o in self.store.outreach_for_lead(lead["id"])):
                 continue
+            if delay:      # note it and wait: the server keeps trying, a real failure comes as its own report
+                if not any(e["type"] == "delivery_delay" for e in self.store.lead_events(lead["id"])):
+                    self.store.log_event(lead["id"], "delivery_delay",
+                                         {"address": addr, "subject": mail.get("subject", "")[:200]}, actor="email")
+                    log.info(f"⏳ Delivery delayed (not a bounce): {addr}")
+                return True
             if any(e["type"] == "bounce" for e in self.store.lead_events(lead["id"])):
                 return True   # already handled (e.g. seen again by the recent-mail scan): count each bounce once
             self.store.suppress(key, "bounced")

@@ -55,11 +55,18 @@ ROLE_LOCALS = ("support", "help", "helpdesk", "legal", "privacy", "security", "a
                "donotreply", "billing", "careers", "jobs", "press", "dpo", "compliance")
 
 
+# Pulled from page source where ">" was written as backslash-u003e: the address came out as "u003esupport@x.com".
+# Two such addresses bounced on 2026-11-25.
+ESCAPED_LOCAL_RE = re.compile(r"^(?:u00[0-9a-f]{2}|x(?:3c|3e|22|27|26))")
+
+
 def is_unusable_address(address: str) -> str:
     """Why this address must not get a cold email ('' = fine)."""
     local, _, domain = (address or "").strip().lower().partition("@")
     if not local or not domain:
         return "not an address"
+    if ESCAPED_LOCAL_RE.match(local):
+        return "a broken address (an escaped character stuck to the front)"
     if domain in PLACEHOLDER_DOMAINS or domain_name(domain) in PLACEHOLDER_NAMES \
             or local in PLACEHOLDER_LOCALS or PLACEHOLDER_LOCAL_RE.match(local):
         return "an example address from a form or docs"

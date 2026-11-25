@@ -223,6 +223,40 @@ def test_bounce_suppresses_and_stops_followups(store):
     assert w.stage_followups() == 0
 
 
+def test_delay_notice_is_not_a_bounce(store):
+    """'Still trying to deliver' warnings don't count toward the bounce rate; the real failure, if any, still does."""
+    from nexus.integrations.email_channel import is_delay_notice
+    RuntimeControl().set_run_mode("live", actor="test")
+    t = FakeTransport()
+    w = make_worker(store, t)
+    lead, _ = sent_opener(store, w, t)
+    delay = {"uid": "7", "from": "mailer-daemon@zoho.in", "subject": "Mail Delivery Status Notification (Delay)",
+             "message_id": "", "references": "", "body": "Delivery to joe@startup.com has been delayed. Will retry.",
+             "dsn": "Final-Recipient: rfc822; joe@startup.com\nAction: delayed"}
+    t.inbox = [delay]
+    w.handle_replies()
+    types = [e["type"] for e in store.lead_events(lead["id"])]
+    assert "bounce" not in types and "delivery_delay" in types
+    assert not store.is_suppressed("email:joe@startup.com") and store.get_lead(lead["id"])["state"] == "SENT"
+    assert "7" in t.seen
+    t.inbox = [{**delay, "uid": "8", "subject": "Undelivered Mail Returned to Sender",
+                "dsn": "Final-Recipient: rfc822; joe@startup.com\nAction: failed"}]
+    w.handle_replies()
+    assert store.get_lead(lead["id"])["state"] == "LOST"
+    assert is_delay_notice({"subject": "Delivery Status Notification (Delay)"})
+    assert not is_delay_notice({"subject": "Delivery Status Notification (Failure)"})
+    assert not is_delay_notice({"subject": "Warning: delayed", "dsn": "Action: failed"})
+
+
+def test_escaped_characters_make_an_address_unusable():
+    from nexus.integrations.mx_check import is_unusable_address
+    assert is_unusable_address("u003esupport@videotool.example")
+    assert is_unusable_address("u003chello@site.io")
+    assert is_unusable_address("x3ehello@site.io")
+    assert not is_unusable_address("hello@site.io") and not is_unusable_address("xavier@site.io")
+    assert not is_unusable_address("ursula@site.io")
+
+
 def test_followup_threads_into_the_opener_and_stops_on_reply(store, monkeypatch):
     import time as _t
     RuntimeControl().set_run_mode("live", actor="test")
